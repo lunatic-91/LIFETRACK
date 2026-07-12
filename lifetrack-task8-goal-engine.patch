@@ -1,0 +1,650 @@
+diff --git a/api/package.json b/api/package.json
+index faa62a8..bb4369c 100644
+--- a/api/package.json
++++ b/api/package.json
+@@ -22,8 +22,7 @@
+     "ioredis": "5.3.2",
+     "jsonwebtoken": "9.0.2",
+     "knex": "3.1.0",
+-    "pg": "8.11.5",
+-    "uuid": "14.0.0"
++    "pg": "8.11.5"
+   },
+   "devDependencies": {
+     "@types/bcrypt": "5.0.2",
+@@ -33,7 +32,6 @@
+     "@types/node": "20.12.12",
+     "@types/pg": "8.11.6",
+     "@types/supertest": "6.0.2",
+-    "@types/uuid": "9.0.8",
+     "fast-check": "3.19.0",
+     "jest": "29.7.0",
+     "supertest": "7.0.0",
+diff --git a/api/src/__tests__/properties/goal.property.test.ts b/api/src/__tests__/properties/goal.property.test.ts
+new file mode 100644
+index 0000000..57a0e4d
+--- /dev/null
++++ b/api/src/__tests__/properties/goal.property.test.ts
+@@ -0,0 +1,74 @@
++/**
++ * Property-based test for goal.service — progress formula correctness.
++ * Feature: lifetrack-app
++ *
++ * computeProgressPct is a pure function, so this property is checked
++ * directly against it — no DB mocking needed.
++ */
++
++import * as fc from 'fast-check';
++
++import { computeProgressPct } from '../../services/goal.service';
++import { arbitraryGoal } from './generators';
++
++// ---------------------------------------------------------------------------
++// Property 8: Goal progress formula correctness
++// Validates: Requirements 5.3, 5.9
++// ---------------------------------------------------------------------------
++
++describe('Property 8: Goal progress formula correctness', () => {
++  // Feature: lifetrack-app, Property 8: Goal progress formula correctness
++
++  test('ascending goals: progress = clamp((sum / target) * 100, 0, 100)', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        arbitraryGoal().filter((g) => g.direction === 'ascending'),
++        fc.array(fc.float({ min: -1000, max: 1000, noNaN: true }), { minLength: 0, maxLength: 20 }),
++        async (goal, entryValues) => {
++          const sum = entryValues.reduce((acc, v) => acc + v, 0);
++          const result = computeProgressPct('ascending', goal.targetValue, sum, 0);
++          const expected = Math.min(100, Math.max(0, (sum / goal.targetValue) * 100));
++
++          expect(result).toBeCloseTo(expected, 5);
++          expect(result).toBeGreaterThanOrEqual(0);
++          expect(result).toBeLessThanOrEqual(100);
++        },
++      ),
++    );
++  });
++
++  test('descending goals: progress = clamp((1 - latest/target) * 100, 0, 100)', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        arbitraryGoal().filter((g) => g.direction === 'descending'),
++        fc.float({ min: -1000, max: 1000, noNaN: true }),
++        async (goal, latestValue) => {
++          const result = computeProgressPct('descending', goal.targetValue, 0, latestValue);
++          const expected = Math.min(
++            100,
++            Math.max(0, (1 - latestValue / goal.targetValue) * 100),
++          );
++
++          expect(result).toBeCloseTo(expected, 5);
++          expect(result).toBeGreaterThanOrEqual(0);
++          expect(result).toBeLessThanOrEqual(100);
++        },
++      ),
++    );
++  });
++
++  test('result is always within [0, 100] regardless of direction or inputs', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        arbitraryGoal(),
++        fc.float({ min: -100000, max: 100000, noNaN: true }),
++        fc.float({ min: -100000, max: 100000, noNaN: true }),
++        async (goal, sum, latest) => {
++          const result = computeProgressPct(goal.direction, goal.targetValue, sum, latest);
++          expect(result).toBeGreaterThanOrEqual(0);
++          expect(result).toBeLessThanOrEqual(100);
++        },
++      ),
++    );
++  });
++});
+diff --git a/api/src/index.ts b/api/src/index.ts
+index 45c79db..4bd39d2 100644
+--- a/api/src/index.ts
++++ b/api/src/index.ts
+@@ -2,6 +2,7 @@ import express from 'express';
+ 
+ import authRouter from './routes/auth.router';
+ import trackerRouter from './routes/tracker.router';
++import goalRouter from './routes/goal.router';
+ 
+ const app = express();
+ 
+@@ -13,5 +14,6 @@ app.get('/health', (_req, res) => {
+ 
+ app.use('/auth', authRouter);
+ app.use('/trackers', trackerRouter);
++app.use('/goals', goalRouter);
+ 
+ export default app;
+diff --git a/api/src/routes/goal.router.ts b/api/src/routes/goal.router.ts
+new file mode 100644
+index 0000000..7cb84ce
+--- /dev/null
++++ b/api/src/routes/goal.router.ts
+@@ -0,0 +1,51 @@
++/**
++ * Goal routes
++ * Requirements: 5.1-5.9
++ */
++
++import { Router } from 'express';
++import type { Request, Response } from 'express';
++
++import { requireAuth } from '../middleware/auth.middleware';
++import { createGoal, listGoals, updateGoal } from '../services/goal.service';
++
++const router = Router();
++
++router.use(requireAuth);
++
++// POST /goals
++router.post('/', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const result = await createGoal(userId, req.body);
++
++  if ('error' in result) {
++    const status = result.error === 'NOT_FOUND' ? 404 : 400;
++    res.status(status).json(result);
++    return;
++  }
++
++  res.status(201).json(result);
++});
++
++// GET /goals
++router.get('/', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const goals = await listGoals(userId);
++  res.status(200).json(goals);
++});
++
++// PATCH /goals/:id
++router.patch('/:id', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const result = await updateGoal(userId, req.params['id']!, req.body);
++
++  if ('error' in result) {
++    const status = result.error === 'NOT_FOUND' ? 404 : 400;
++    res.status(status).json(result);
++    return;
++  }
++
++  res.status(200).json(result);
++});
++
++export default router;
+diff --git a/api/src/services/auth.service.ts b/api/src/services/auth.service.ts
+index f11e128..80b4663 100644
+--- a/api/src/services/auth.service.ts
++++ b/api/src/services/auth.service.ts
+@@ -1,7 +1,6 @@
+ import bcrypt from 'bcrypt';
+ import crypto from 'crypto';
+ import jwt from 'jsonwebtoken';
+-import { v4 as uuidv4 } from 'uuid';
+ 
+ import { getKnex, getRedis } from '../db/client';
+ import { seedBuiltinTrackers } from '../db/seeds/01_builtin_trackers';
+@@ -152,7 +151,7 @@ export async function registerUser(
+   });
+ 
+   // ---- 6. Issue opaque refresh token and store in Redis ----
+-  const refreshToken = uuidv4();
++  const refreshToken = crypto.randomUUID();
+   const redis = getRedis();
+ 
+   await redis.set(`refresh:${refreshToken}`, userId, 'EX', REFRESH_TOKEN_TTL_SECONDS);
+@@ -218,7 +217,7 @@ export async function loginUser(req: LoginRequest): Promise<SessionTokens | Auth
+     { expiresIn: JWT_EXPIRY },
+   );
+ 
+-  const refreshToken = uuidv4();
++  const refreshToken = crypto.randomUUID();
+   const redis = getRedis();
+ 
+   await redis.set(`refresh:${refreshToken}`, user.id, 'EX', REFRESH_TOKEN_TTL_SECONDS);
+@@ -262,7 +261,7 @@ export async function refreshSession(refreshToken: string): Promise<SessionToken
+   // ---- 3. Rotate token: delete old, create new ----
+   await redis.del(`refresh:${refreshToken}`);
+ 
+-  const newRefreshToken = uuidv4();
++  const newRefreshToken = crypto.randomUUID();
+   await redis.set(`refresh:${newRefreshToken}`, userId, 'EX', REFRESH_TOKEN_TTL_SECONDS);
+ 
+   // ---- 4. Re-fetch user email for JWT payload ----
+@@ -367,7 +366,7 @@ export async function requestPasswordReset(email: string): Promise<void | RateLi
+   }
+ 
+   // ---- 3. Generate secure token ----
+-  const token = `${uuidv4()}${crypto.randomBytes(32).toString('hex')}`;
++  const token = `${crypto.randomUUID()}${crypto.randomBytes(32).toString('hex')}`;
+ 
+   // ---- 4. Insert into password_reset_tokens ----
+   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+diff --git a/api/src/services/entry.service.ts b/api/src/services/entry.service.ts
+index 0a0da5c..eb665e3 100644
+--- a/api/src/services/entry.service.ts
++++ b/api/src/services/entry.service.ts
+@@ -1,4 +1,6 @@
+ import { getKnex } from '../db/client';
++import { recalculateStreak } from './streak.service';
++import { updateGoalProgress } from './goal.service';
+ import type { Entry, ValidationError, ConflictError, NotFoundError, ValidRange } from '../types';
+ 
+ // ---------------------------------------------------------------------------
+@@ -93,6 +95,26 @@ function parseValidRange(raw: ValidRange | string | null): ValidRange | null {
+   return typeof raw === 'string' ? (JSON.parse(raw) as ValidRange) : raw;
+ }
+ 
++/**
++ * Triggers the two side effects that must follow every successful Entry
++ * save: Streak recalculation (Req 3.9, 4.1-4.3) and Goal progress update
++ * (Req 5.3-5.5, 5.9). Each is isolated in its own try/catch so a failure in
++ * one (or both) never prevents the Entry itself from being saved and
++ * returned to the caller.
++ */
++async function runPostSaveHooks(userId: string, trackerId: string): Promise<void> {
++  await Promise.all([
++    recalculateStreak(userId, trackerId).catch((err: unknown) => {
++      // eslint-disable-next-line no-console
++      console.error(`Streak recalculation failed for tracker ${trackerId}:`, err);
++    }),
++    updateGoalProgress(trackerId).catch((err: unknown) => {
++      // eslint-disable-next-line no-console
++      console.error(`Goal progress update failed for tracker ${trackerId}:`, err);
++    }),
++  ]);
++}
++
+ function validateValue(
+   tracker: TrackerRow,
+   value: number | boolean | string,
+@@ -205,6 +227,7 @@ export async function logEntry(
+       })
+       .returning('*')) as EntryRow[];
+ 
++    await runPostSaveHooks(userId, trackerId);
+     return { entry: rowToEntry(updated!), noteTruncated };
+   }
+ 
+@@ -220,6 +243,7 @@ export async function logEntry(
+     })
+     .returning('*')) as EntryRow[];
+ 
++  await runPostSaveHooks(userId, trackerId);
+   return { entry: rowToEntry(inserted!), noteTruncated };
+ }
+ 
+@@ -316,5 +340,6 @@ export async function editEntry(
+     return { error: 'NOT_FOUND', message: 'Entry not found' } satisfies NotFoundError;
+   }
+ 
++  await runPostSaveHooks(userId, trackerId);
+   return { entry: rowToEntry(updated), noteTruncated };
+ }
+diff --git a/api/src/services/goal.service.ts b/api/src/services/goal.service.ts
+new file mode 100644
+index 0000000..b50da19
+--- /dev/null
++++ b/api/src/services/goal.service.ts
+@@ -0,0 +1,335 @@
++import { Queue } from 'bullmq';
++
++import { getKnex } from '../db/client';
++import type { Goal, GoalDirection, ValidationError, NotFoundError } from '../types';
++
++// ---------------------------------------------------------------------------
++// Constants
++// ---------------------------------------------------------------------------
++
++export const NOTIFICATION_QUEUE_NAME = 'notifications';
++
++/** Goal-completion notifications must be delivered within 5 minutes (Req 5.5). */
++export const GOAL_COMPLETION_NOTIFICATION_MAX_DELAY_MS = 5 * 60 * 1000;
++
++// ---------------------------------------------------------------------------
++// Notification queue (mirrors the pattern used in streak.service.ts:
++// a plain {host, port} object rather than a shared ioredis instance, since
++// BullMQ bundles its own nested ioredis dependency).
++// ---------------------------------------------------------------------------
++
++let notificationQueue: Queue | null = null;
++
++function getQueueConnection(): { host: string; port: number } {
++  const redisUrl = process.env['REDIS_URL'];
++  if (redisUrl) {
++    const url = new URL(redisUrl);
++    return { host: url.hostname, port: url.port ? Number(url.port) : 6379 };
++  }
++  return { host: '127.0.0.1', port: 6379 };
++}
++
++export function getNotificationQueue(): Queue {
++  if (!notificationQueue) {
++    notificationQueue = new Queue(NOTIFICATION_QUEUE_NAME, { connection: getQueueConnection() });
++  }
++  return notificationQueue;
++}
++
++// ---------------------------------------------------------------------------
++// Types
++// ---------------------------------------------------------------------------
++
++export interface CreateGoalRequest {
++  trackerId: string;
++  targetValue: number;
++  direction: GoalDirection;
++  deadline: string; // YYYY-MM-DD
++}
++
++export interface UpdateGoalRequest {
++  targetValue?: number;
++  deadline?: string;
++}
++
++export interface GroupedGoals {
++  active: Goal[];
++  completed: Goal[];
++  expired: Goal[];
++}
++
++interface GoalRow {
++  id: string;
++  user_id: string;
++  tracker_id: string;
++  target_value: string | number;
++  direction: GoalDirection;
++  deadline: string;
++  status: 'active' | 'completed' | 'expired';
++  progress_pct: string | number;
++  created_at: string | Date;
++  completed_at: string | Date | null;
++  expired_at: string | Date | null;
++}
++
++function rowToGoal(row: GoalRow): Goal {
++  return {
++    id: row.id,
++    userId: row.user_id,
++    trackerId: row.tracker_id,
++    targetValue: Number(row.target_value),
++    direction: row.direction,
++    deadline: row.deadline.slice(0, 10),
++    status: row.status,
++    progressPct: Number(row.progress_pct),
++    createdAt: new Date(row.created_at).toISOString(),
++    completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : null,
++    expiredAt: row.expired_at ? new Date(row.expired_at).toISOString() : null,
++  };
++}
++
++function todayDateOnly(): string {
++  return new Date().toISOString().slice(0, 10);
++}
++
++// ---------------------------------------------------------------------------
++// Progress formula (Property 8)
++// ---------------------------------------------------------------------------
++
++function clamp(value: number, min: number, max: number): number {
++  return Math.min(max, Math.max(min, value));
++}
++
++/**
++ * Ascending:  clamp((sum of entry values / target) * 100, 0, 100)
++ * Descending: clamp((1 - (latest entry value / target)) * 100, 0, 100)
++ *
++ * Requirements: 5.3, 5.9
++ */
++export function computeProgressPct(
++  direction: GoalDirection,
++  targetValue: number,
++  sumEntryValues: number,
++  latestEntryValue: number,
++): number {
++  if (direction === 'ascending') {
++    return clamp((sumEntryValues / targetValue) * 100, 0, 100);
++  }
++  return clamp((1 - latestEntryValue / targetValue) * 100, 0, 100);
++}
++
++// ---------------------------------------------------------------------------
++// createGoal
++// ---------------------------------------------------------------------------
++
++/**
++ * Requirements: 5.1, 5.2
++ */
++export async function createGoal(
++  userId: string,
++  req: CreateGoalRequest,
++): Promise<Goal | ValidationError | NotFoundError> {
++  if (!req.trackerId || !req.direction || req.targetValue === undefined || !req.deadline) {
++    return {
++      error: 'VALIDATION_ERROR',
++      message: 'trackerId, targetValue, direction, and deadline are all required',
++      fields: {
++        ...(req.trackerId ? {} : { trackerId: 'A linked tracker is required' }),
++        ...(req.targetValue === undefined ? { targetValue: 'A target value is required' } : {}),
++        ...(req.direction ? {} : { direction: 'A goal direction is required' }),
++        ...(req.deadline ? {} : { deadline: 'A deadline date is required' }),
++      },
++    } satisfies ValidationError;
++  }
++
++  if (req.deadline < todayDateOnly()) {
++    return {
++      error: 'VALIDATION_ERROR',
++      message: 'Deadline must be a future date',
++      fields: { deadline: 'A deadline date is required' },
++    } satisfies ValidationError;
++  }
++
++  const knex = getKnex();
++
++  const tracker = (await knex('trackers')
++    .where({ id: req.trackerId, user_id: userId })
++    .select('id')
++    .first()) as { id: string } | undefined;
++
++  if (!tracker) {
++    return { error: 'NOT_FOUND', message: 'Tracker not found' } satisfies NotFoundError;
++  }
++
++  const [inserted] = (await knex('goals')
++    .insert({
++      user_id: userId,
++      tracker_id: req.trackerId,
++      target_value: req.targetValue,
++      direction: req.direction,
++      deadline: req.deadline,
++    })
++    .returning('*')) as GoalRow[];
++
++  return rowToGoal(inserted!);
++}
++
++// ---------------------------------------------------------------------------
++// listGoals
++// ---------------------------------------------------------------------------
++
++/**
++ * Requirements: 5.7
++ */
++export async function listGoals(userId: string): Promise<GroupedGoals> {
++  const knex = getKnex();
++  const rows = (await knex('goals')
++    .where({ user_id: userId })
++    .orderBy('created_at', 'desc')) as GoalRow[];
++
++  const goals = rows.map(rowToGoal);
++
++  return {
++    active: goals.filter((g) => g.status === 'active'),
++    completed: goals.filter((g) => g.status === 'completed'),
++    expired: goals.filter((g) => g.status === 'expired'),
++  };
++}
++
++// ---------------------------------------------------------------------------
++// updateGoal
++// ---------------------------------------------------------------------------
++
++/**
++ * Edits the target value or deadline of an active Goal and immediately
++ * recalculates progress against the new target value.
++ *
++ * Requirements: 5.8
++ */
++export async function updateGoal(
++  userId: string,
++  goalId: string,
++  updates: UpdateGoalRequest,
++): Promise<Goal | ValidationError | NotFoundError> {
++  if (updates.deadline !== undefined && updates.deadline < todayDateOnly()) {
++    return {
++      error: 'VALIDATION_ERROR',
++      message: 'Deadline must be a future date',
++      fields: { deadline: 'A deadline date is required' },
++    } satisfies ValidationError;
++  }
++
++  const knex = getKnex();
++
++  const goal = (await knex('goals')
++    .where({ id: goalId, user_id: userId })
++    .first()) as GoalRow | undefined;
++
++  if (!goal) {
++    return { error: 'NOT_FOUND', message: 'Goal not found' } satisfies NotFoundError;
++  }
++
++  const patch: Record<string, unknown> = {};
++  if (updates.targetValue !== undefined) patch['target_value'] = updates.targetValue;
++  if (updates.deadline !== undefined) patch['deadline'] = updates.deadline;
++
++  // Recalculate progress immediately if the target value changed.
++  if (updates.targetValue !== undefined) {
++    const entryStats = (await knex('entries')
++      .where({ tracker_id: goal.tracker_id })
++      .orderBy('local_date', 'desc')
++      .select('value_numeric')) as { value_numeric: string | number | null }[];
++
++    const numericValues = entryStats
++      .map((e) => (e.value_numeric === null ? null : Number(e.value_numeric)))
++      .filter((v): v is number => v !== null);
++
++    const sum = numericValues.reduce((acc, v) => acc + v, 0);
++    const latest = numericValues[0] ?? 0;
++
++    patch['progress_pct'] = computeProgressPct(
++      goal.direction,
++      updates.targetValue,
++      sum,
++      latest,
++    );
++  }
++
++  const [updated] = (await knex('goals')
++    .where({ id: goalId, user_id: userId })
++    .update(patch)
++    .returning('*')) as GoalRow[];
++
++  return rowToGoal(updated!);
++}
++
++// ---------------------------------------------------------------------------
++// updateGoalProgress — hook called by entry.service after each Entry save
++// ---------------------------------------------------------------------------
++
++/**
++ * Recomputes progress for every active Goal linked to a tracker after a new
++ * Entry is saved, marking Goals completed (and notifying) once progress
++ * reaches 100%.
++ *
++ * Requirements: 5.3, 5.4, 5.5, 5.9
++ */
++export async function updateGoalProgress(trackerId: string): Promise<void> {
++  const knex = getKnex();
++
++  const goals = (await knex('goals')
++    .where({ tracker_id: trackerId, status: 'active' })) as GoalRow[];
++
++  if (goals.length === 0) return;
++
++  const entryRows = (await knex('entries')
++    .where({ tracker_id: trackerId })
++    .orderBy('local_date', 'desc')
++    .select('value_numeric')) as { value_numeric: string | number | null }[];
++
++  const numericValues = entryRows
++    .map((e) => (e.value_numeric === null ? null : Number(e.value_numeric)))
++    .filter((v): v is number => v !== null);
++
++  const sum = numericValues.reduce((acc, v) => acc + v, 0);
++  const latest = numericValues[0] ?? 0;
++
++  for (const goal of goals) {
++    const targetValue = Number(goal.target_value);
++    const progressPct = computeProgressPct(goal.direction, targetValue, sum, latest);
++    const justCompleted = progressPct >= 100;
++
++    await knex('goals')
++      .where({ id: goal.id })
++      .update({
++        progress_pct: progressPct,
++        ...(justCompleted ? { status: 'completed', completed_at: new Date() } : {}),
++      });
++
++    if (justCompleted) {
++      const queue = getNotificationQueue();
++      await queue.add(
++        'goal-completed',
++        { userId: goal.user_id, goalId: goal.id, trackerId },
++        { delay: 0, attempts: 3 },
++      );
++    }
++  }
++}
++
++// ---------------------------------------------------------------------------
++// expireOverdueGoals — meant to run on a scheduled job (Req 5.6)
++// ---------------------------------------------------------------------------
++
++export async function expireOverdueGoals(): Promise<number> {
++  const knex = getKnex();
++  const today = todayDateOnly();
++
++  const rows = (await knex('goals')
++    .where({ status: 'active' })
++    .andWhere('deadline', '<', today)
++    .update({ status: 'expired', expired_at: new Date() })
++    .returning('id')) as { id: string }[];
++
++  return rows.length;
++}
+diff --git a/api/src/types/index.ts b/api/src/types/index.ts
+index e10ab1c..4b3a113 100644
+--- a/api/src/types/index.ts
++++ b/api/src/types/index.ts
+@@ -97,3 +97,17 @@ export interface Streak {
+   longestStreak: number;
+   lastCompletedDate: string | null; // YYYY-MM-DD
+ }
++
++export interface Goal {
++  id: string;
++  userId: string;
++  trackerId: string;
++  targetValue: number;
++  direction: GoalDirection;
++  deadline: string; // YYYY-MM-DD
++  status: GoalStatus;
++  progressPct: number;
++  createdAt: string;
++  completedAt: string | null;
++  expiredAt: string | null;
++}

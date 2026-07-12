@@ -97,3 +97,17 @@ export interface Streak {
   longestStreak: number;
   lastCompletedDate: string | null; // YYYY-MM-DD
 }
+
+export interface Goal {
+  id: string;
+  userId: string;
+  trackerId: string;
+  targetValue: number;
+  direction: GoalDirection;
+  deadline: string; // YYYY-MM-DD
+  status: GoalStatus;
+  progressPct: number;
+  createdAt: string;
+  completedAt: string | null;
+  expiredAt: string | null;
+}

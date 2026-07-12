@@ -1,4 +1,6 @@
 import { getKnex } from '../db/client';
+import { recalculateStreak } from './streak.service';
+import { updateGoalProgress } from './goal.service';
 import type { Entry, ValidationError, ConflictError, NotFoundError, ValidRange } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -91,6 +93,26 @@ function valueColumns(
 function parseValidRange(raw: ValidRange | string | null): ValidRange | null {
   if (raw === null) return null;
   return typeof raw === 'string' ? (JSON.parse(raw) as ValidRange) : raw;
+}
+
+/**
+ * Triggers the two side effects that must follow every successful Entry
+ * save: Streak recalculation (Req 3.9, 4.1-4.3) and Goal progress update
+ * (Req 5.3-5.5, 5.9). Each is isolated in its own try/catch so a failure in
+ * one (or both) never prevents the Entry itself from being saved and
+ * returned to the caller.
+ */
+async function runPostSaveHooks(userId: string, trackerId: string): Promise<void> {
+  await Promise.all([
+    recalculateStreak(userId, trackerId).catch((err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error(`Streak recalculation failed for tracker ${trackerId}:`, err);
+    }),
+    updateGoalProgress(trackerId).catch((err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error(`Goal progress update failed for tracker ${trackerId}:`, err);
+    }),
+  ]);
 }
 
 function validateValue(
@@ -205,6 +227,7 @@ export async function logEntry(
       })
       .returning('*')) as EntryRow[];
 
+    await runPostSaveHooks(userId, trackerId);
     return { entry: rowToEntry(updated!), noteTruncated };
   }
 
@@ -220,6 +243,7 @@ export async function logEntry(
     })
     .returning('*')) as EntryRow[];
 
+  await runPostSaveHooks(userId, trackerId);
   return { entry: rowToEntry(inserted!), noteTruncated };
 }
 
@@ -316,5 +340,6 @@ export async function editEntry(
     return { error: 'NOT_FOUND', message: 'Entry not found' } satisfies NotFoundError;
   }
 
+  await runPostSaveHooks(userId, trackerId);
   return { entry: rowToEntry(updated), noteTruncated };
 }

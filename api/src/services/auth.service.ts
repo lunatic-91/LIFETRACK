@@ -1,7 +1,6 @@
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
-import { v4 as uuidv4 } from 'uuid';
 
 import { getKnex, getRedis } from '../db/client';
 import { seedBuiltinTrackers } from '../db/seeds/01_builtin_trackers';
@@ -152,7 +151,7 @@ export async function registerUser(
   });
 
   // ---- 6. Issue opaque refresh token and store in Redis ----
-  const refreshToken = uuidv4();
+  const refreshToken = crypto.randomUUID();
   const redis = getRedis();
 
   await redis.set(`refresh:${refreshToken}`, userId, 'EX', REFRESH_TOKEN_TTL_SECONDS);
@@ -218,7 +217,7 @@ export async function loginUser(req: LoginRequest): Promise<SessionTokens | Auth
     { expiresIn: JWT_EXPIRY },
   );
 
-  const refreshToken = uuidv4();
+  const refreshToken = crypto.randomUUID();
   const redis = getRedis();
 
   await redis.set(`refresh:${refreshToken}`, user.id, 'EX', REFRESH_TOKEN_TTL_SECONDS);
@@ -262,7 +261,7 @@ export async function refreshSession(refreshToken: string): Promise<SessionToken
   // ---- 3. Rotate token: delete old, create new ----
   await redis.del(`refresh:${refreshToken}`);
 
-  const newRefreshToken = uuidv4();
+  const newRefreshToken = crypto.randomUUID();
   await redis.set(`refresh:${newRefreshToken}`, userId, 'EX', REFRESH_TOKEN_TTL_SECONDS);
 
   // ---- 4. Re-fetch user email for JWT payload ----
@@ -367,7 +366,7 @@ export async function requestPasswordReset(email: string): Promise<void | RateLi
   }
 
   // ---- 3. Generate secure token ----
-  const token = `${uuidv4()}${crypto.randomBytes(32).toString('hex')}`;
+  const token = `${crypto.randomUUID()}${crypto.randomBytes(32).toString('hex')}`;
 
   // ---- 4. Insert into password_reset_tokens ----
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);

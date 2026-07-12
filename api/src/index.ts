@@ -2,6 +2,7 @@ import express from 'express';
 
 import authRouter from './routes/auth.router';
 import trackerRouter from './routes/tracker.router';
+import goalRouter from './routes/goal.router';
 
 const app = express();
 
@@ -13,5 +14,6 @@ app.get('/health', (_req, res) => {
 
 app.use('/auth', authRouter);
 app.use('/trackers', trackerRouter);
+app.use('/goals', goalRouter);
 
 export default app;
