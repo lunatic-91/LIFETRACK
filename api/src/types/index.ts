@@ -49,6 +49,31 @@ export interface NotFoundError {
   message: string;
 }
 
+export interface LimitError {
+  error: 'LIMIT_ERROR';
+  message: string;
+}
+
+export interface ValidRange {
+  min: number;
+  max: number;
+}
+
+export interface Tracker {
+  id: string;
+  userId: string;
+  name: string;
+  dataType: TrackerDataType;
+  unit: string | null;
+  frequency: TrackerFrequency;
+  validRange: ValidRange | null;
+  isHabit: boolean;
+  graceEnabled: boolean;
+  isArchived: boolean;
+  isBuiltin: boolean;
+  createdAt: string;
+}
+
 export interface InternalError {
   error: 'INTERNAL_ERROR';
   message: string;

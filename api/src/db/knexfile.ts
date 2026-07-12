@@ -39,10 +39,15 @@ const config: Record<string, Knex.Config> = {
   },
   production: {
     client: 'pg',
-    connection: process.env['DATABASE_URL'],
+    // Validated lazily in getKnex() (db/client.ts) so simply importing this
+    // file (e.g. in tests that never select the 'production' config) can't
+    // throw just because DATABASE_URL isn't set in that environment.
+    connection: process.env['DATABASE_URL'] ?? '',
+    // Kept small on purpose: API and Postgres each run on a 1 OCPU / 1GB
+    // Oracle Free Tier VM, so every open connection costs real memory.
     pool: {
-      min: 2,
-      max: 20,
+      min: 1,
+      max: 5,
     },
     migrations: {
       directory: './migrations',

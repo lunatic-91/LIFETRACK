@@ -1,0 +1,729 @@
+diff --git a/api/src/__tests__/properties/tracker.property.test.ts b/api/src/__tests__/properties/tracker.property.test.ts
+new file mode 100644
+index 0000000..fedd2f1
+--- /dev/null
++++ b/api/src/__tests__/properties/tracker.property.test.ts
+@@ -0,0 +1,143 @@
++/**
++ * Property-based tests for tracker.service — cascade delete.
++ * Feature: lifetrack-app
++ *
++ * These are UNIT tests. getKnex() is mocked to simulate a table-store with
++ * ON DELETE CASCADE semantics so the property is checked against in-memory
++ * state rather than a real database.
++ */
++
++import * as fc from 'fast-check';
++
++import { arbitraryTracker } from './generators';
++
++// ---------------------------------------------------------------------------
++// In-memory fake tables + a minimal Knex-like query builder
++// ---------------------------------------------------------------------------
++
++interface FakeDb {
++  trackers: Map<string, { id: string; user_id: string; is_archived: boolean }>;
++  entries: Map<string, { id: string; tracker_id: string }>;
++  goals: Map<string, { id: string; tracker_id: string }>;
++}
++
++function makeFakeKnex(db: FakeDb) {
++  return (table: 'trackers' | 'entries' | 'goals') => {
++    const state: { whereClause: Record<string, unknown> } = { whereClause: {} };
++
++    const builder = {
++      where(clause: Record<string, unknown>) {
++        state.whereClause = { ...state.whereClause, ...clause };
++        return builder;
++      },
++      select() {
++        return builder;
++      },
++      async first() {
++        if (table !== 'trackers') return undefined;
++        for (const row of db.trackers.values()) {
++          if (matches(row, state.whereClause)) return row;
++        }
++        return undefined;
++      },
++      async delete() {
++        if (table === 'trackers') {
++          for (const [id, row] of db.trackers) {
++            if (matches(row, state.whereClause)) {
++              db.trackers.delete(id);
++              // Simulate ON DELETE CASCADE
++              for (const [eid, e] of db.entries) {
++                if (e.tracker_id === id) db.entries.delete(eid);
++              }
++              for (const [gid, g] of db.goals) {
++                if (g.tracker_id === id) db.goals.delete(gid);
++              }
++            }
++          }
++        }
++        return undefined;
++      },
++    };
++    return builder;
++  };
++}
++
++function matches(row: Record<string, unknown>, clause: Record<string, unknown>): boolean {
++  return Object.entries(clause).every(([k, v]) => row[k] === v);
++}
++
++jest.mock('../../db/client', () => ({
++  getKnex: jest.fn(),
++}));
++
++import { deleteTracker } from '../../services/tracker.service';
++import { getKnex } from '../../db/client';
++
++// ---------------------------------------------------------------------------
++// Property 7: Cascade delete removes tracker and all associated data
++// Validates: Requirements 2.7
++// ---------------------------------------------------------------------------
++
++describe('Property 7: Cascade delete removes tracker and all associated data', () => {
++  // Feature: lifetrack-app, Property 7: Cascade delete removes tracker and all associated data
++
++  test('for any non-archived tracker with entries/goals, delete removes all rows', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        arbitraryTracker(),
++        fc.integer({ min: 0, max: 10 }),
++        fc.integer({ min: 0, max: 10 }),
++        async (_trackerConfig, entryCount, goalCount) => {
++          const userId = 'user-1';
++          const trackerId = 'tracker-1';
++
++          const db: FakeDb = {
++            trackers: new Map([[trackerId, { id: trackerId, user_id: userId, is_archived: false }]]),
++            entries: new Map(
++              Array.from({ length: entryCount }, (_, i) => [
++                `entry-${i}`,
++                { id: `entry-${i}`, tracker_id: trackerId },
++              ]),
++            ),
++            goals: new Map(
++              Array.from({ length: goalCount }, (_, i) => [
++                `goal-${i}`,
++                { id: `goal-${i}`, tracker_id: trackerId },
++              ]),
++            ),
++          };
++
++          (getKnex as jest.Mock).mockReturnValue(makeFakeKnex(db) as unknown);
++
++          const result = await deleteTracker(userId, trackerId);
++
++          expect(result).toBeUndefined();
++          expect(db.trackers.has(trackerId)).toBe(false);
++          expect([...db.entries.values()].some((e) => e.tracker_id === trackerId)).toBe(false);
++          expect([...db.goals.values()].some((g) => g.tracker_id === trackerId)).toBe(false);
++        },
++      ),
++    );
++  });
++
++  test('archived trackers are rejected with CONFLICT and are not deleted', async () => {
++    const userId = 'user-1';
++    const trackerId = 'tracker-archived';
++
++    const db: FakeDb = {
++      trackers: new Map([[trackerId, { id: trackerId, user_id: userId, is_archived: true }]]),
++      entries: new Map(),
++      goals: new Map(),
++    };
++
++    (getKnex as jest.Mock).mockReturnValue(makeFakeKnex(db) as unknown);
++
++    const result = await deleteTracker(userId, trackerId);
++
++    expect(result).toEqual({
++      error: 'CONFLICT',
++      message: 'Cannot delete an archived tracker; unarchive it first',
++    });
++    expect(db.trackers.has(trackerId)).toBe(true);
++  });
++});
+diff --git a/api/src/db/client.ts b/api/src/db/client.ts
+index 554c8bb..53fdeae 100644
+--- a/api/src/db/client.ts
++++ b/api/src/db/client.ts
+@@ -14,6 +14,9 @@ let redisInstance: IORedis | null = null;
+ export function getKnex(): KnexType {
+   if (!knexInstance) {
+     const env = process.env['NODE_ENV'] ?? 'development';
++    if (env === 'production' && !process.env['DATABASE_URL']) {
++      throw new Error('DATABASE_URL environment variable is required in production');
++    }
+     const config = knexConfig[env] ?? knexConfig['development'];
+     knexInstance = Knex(config!);
+   }
+diff --git a/api/src/db/knexfile.ts b/api/src/db/knexfile.ts
+index 66f2d35..0fa98f2 100644
+--- a/api/src/db/knexfile.ts
++++ b/api/src/db/knexfile.ts
+@@ -39,10 +39,15 @@ const config: Record<string, Knex.Config> = {
+   },
+   production: {
+     client: 'pg',
+-    connection: process.env['DATABASE_URL'],
++    // Validated lazily in getKnex() (db/client.ts) so simply importing this
++    // file (e.g. in tests that never select the 'production' config) can't
++    // throw just because DATABASE_URL isn't set in that environment.
++    connection: process.env['DATABASE_URL'] ?? '',
++    // Kept small on purpose: API and Postgres each run on a 1 OCPU / 1GB
++    // Oracle Free Tier VM, so every open connection costs real memory.
+     pool: {
+-      min: 2,
+-      max: 20,
++      min: 1,
++      max: 5,
+     },
+     migrations: {
+       directory: './migrations',
+diff --git a/api/src/index.ts b/api/src/index.ts
+index 2daf429..45c79db 100644
+--- a/api/src/index.ts
++++ b/api/src/index.ts
+@@ -1,5 +1,8 @@
+ import express from 'express';
+ 
++import authRouter from './routes/auth.router';
++import trackerRouter from './routes/tracker.router';
++
+ const app = express();
+ 
+ app.use(express.json());
+@@ -8,4 +11,7 @@ app.get('/health', (_req, res) => {
+   res.json({ status: 'ok' });
+ });
+ 
++app.use('/auth', authRouter);
++app.use('/trackers', trackerRouter);
++
+ export default app;
+diff --git a/api/src/routes/tracker.router.ts b/api/src/routes/tracker.router.ts
+new file mode 100644
+index 0000000..5cb7eba
+--- /dev/null
++++ b/api/src/routes/tracker.router.ts
+@@ -0,0 +1,85 @@
++/**
++ * Tracker routes: create, list, update, archive, delete
++ * Requirements: 2.1-2.10
++ */
++
++import { Router } from 'express';
++import type { Request, Response } from 'express';
++
++import { requireAuth } from '../middleware/auth.middleware';
++import {
++  createTracker,
++  listTrackers,
++  updateTracker,
++  archiveTracker,
++  deleteTracker,
++} from '../services/tracker.service';
++
++const router = Router();
++
++router.use(requireAuth);
++
++// POST /trackers
++router.post('/', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const result = await createTracker(userId, req.body);
++
++  if (result && 'error' in result) {
++    const status = result.error === 'LIMIT_ERROR' ? 400 : 400;
++    res.status(status).json(result);
++    return;
++  }
++
++  res.status(201).json(result);
++});
++
++// GET /trackers
++router.get('/', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const includeArchived = req.query['includeArchived'] === 'true';
++  const trackers = await listTrackers(userId, { includeArchived });
++  res.status(200).json(trackers);
++});
++
++// PATCH /trackers/:id
++router.patch('/:id', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const result = await updateTracker(userId, req.params['id']!, req.body);
++
++  if (result && 'error' in result) {
++    const status = result.error === 'NOT_FOUND' ? 404 : 400;
++    res.status(status).json(result);
++    return;
++  }
++
++  res.status(200).json(result);
++});
++
++// POST /trackers/:id/archive
++router.post('/:id/archive', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const result = await archiveTracker(userId, req.params['id']!);
++
++  if (result && 'error' in result) {
++    res.status(404).json(result);
++    return;
++  }
++
++  res.status(204).send();
++});
++
++// DELETE /trackers/:id
++router.delete('/:id', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const result = await deleteTracker(userId, req.params['id']!);
++
++  if (result && 'error' in result) {
++    const status = result.error === 'NOT_FOUND' ? 404 : 409;
++    res.status(status).json(result);
++    return;
++  }
++
++  res.status(204).send();
++});
++
++export default router;
+diff --git a/api/src/services/tracker.service.ts b/api/src/services/tracker.service.ts
+new file mode 100644
+index 0000000..a5ca26f
+--- /dev/null
++++ b/api/src/services/tracker.service.ts
+@@ -0,0 +1,317 @@
++import { getKnex } from '../db/client';
++import type {
++  Tracker,
++  TrackerDataType,
++  TrackerFrequency,
++  ValidRange,
++  ValidationError,
++  LimitError,
++  ConflictError,
++  NotFoundError,
++} from '../types';
++
++// ---------------------------------------------------------------------------
++// Constants
++// ---------------------------------------------------------------------------
++
++const MAX_ACTIVE_TRACKERS = 50;
++
++// ---------------------------------------------------------------------------
++// Types
++// ---------------------------------------------------------------------------
++
++export interface CreateTrackerRequest {
++  name: string;
++  dataType: TrackerDataType;
++  unit?: string;
++  frequency: TrackerFrequency;
++  categories?: string[];
++  validRange?: ValidRange;
++  isHabit?: boolean;
++  graceEnabled?: boolean;
++}
++
++export interface UpdateTrackerRequest {
++  name?: string;
++  unit?: string;
++  frequency?: TrackerFrequency;
++  validRange?: ValidRange;
++  isHabit?: boolean;
++  graceEnabled?: boolean;
++}
++
++// ---------------------------------------------------------------------------
++// Row <-> domain mapping
++// ---------------------------------------------------------------------------
++
++interface TrackerRow {
++  id: string;
++  user_id: string;
++  name: string;
++  data_type: TrackerDataType;
++  unit: string | null;
++  frequency: TrackerFrequency | string;
++  valid_range: ValidRange | string | null;
++  is_habit: boolean;
++  grace_enabled: boolean;
++  is_archived: boolean;
++  is_builtin: boolean;
++  created_at: string | Date;
++}
++
++function parseJsonbColumn<T>(value: T | string | null): T | null {
++  if (value === null) return null;
++  return typeof value === 'string' ? (JSON.parse(value) as T) : value;
++}
++
++function rowToTracker(row: TrackerRow): Tracker {
++  return {
++    id: row.id,
++    userId: row.user_id,
++    name: row.name,
++    dataType: row.data_type,
++    unit: row.unit,
++    frequency: parseJsonbColumn<TrackerFrequency>(row.frequency) as TrackerFrequency,
++    validRange: parseJsonbColumn<ValidRange>(row.valid_range),
++    isHabit: row.is_habit,
++    graceEnabled: row.grace_enabled,
++    isArchived: row.is_archived,
++    isBuiltin: row.is_builtin,
++    createdAt: new Date(row.created_at).toISOString(),
++  };
++}
++
++// ---------------------------------------------------------------------------
++// Validation helpers
++// ---------------------------------------------------------------------------
++
++function isValidName(name: unknown): name is string {
++  return typeof name === 'string' && name.length >= 1 && name.length <= 100;
++}
++
++// ---------------------------------------------------------------------------
++// createTracker
++// ---------------------------------------------------------------------------
++
++/**
++ * Creates a new Tracker for a user.
++ *
++ * Steps:
++ *  1. Validate name (1-100 chars) and required fields.
++ *  2. Enforce the 50-active-tracker limit (Req 2.9, 2.10).
++ *  3. Insert the tracker row; link any given category names (creating
++ *     categories on the fly, Req 2.3).
++ *  4. Return the created Tracker.
++ *
++ * Requirements: 2.1, 2.2, 2.3, 2.9, 2.10
++ */
++export async function createTracker(
++  userId: string,
++  req: CreateTrackerRequest,
++): Promise<Tracker | ValidationError | LimitError> {
++  if (!isValidName(req.name)) {
++    return {
++      error: 'VALIDATION_ERROR',
++      message: 'A tracker name of 1-100 characters is required',
++      fields: { name: 'Name must be between 1 and 100 characters' },
++    } satisfies ValidationError;
++  }
++
++  const knex = getKnex();
++
++  // ---- 2. Enforce active tracker limit ----
++  const countRows = (await knex('trackers')
++    .where({ user_id: userId, is_archived: false })
++    .count<{ count: string }[]>('id as count')) as { count: string }[];
++
++  const activeCount = Number(countRows[0]?.count ?? 0);
++
++  if (activeCount >= MAX_ACTIVE_TRACKERS) {
++    return {
++      error: 'LIMIT_ERROR',
++      message: `Active tracker limit of ${MAX_ACTIVE_TRACKERS} has been reached`,
++    } satisfies LimitError;
++  }
++
++  // ---- 3. Insert tracker ----
++  const [inserted] = (await knex('trackers')
++    .insert({
++      user_id: userId,
++      name: req.name,
++      data_type: req.dataType,
++      unit: req.unit ?? null,
++      frequency: JSON.stringify(req.frequency),
++      valid_range: req.validRange ? JSON.stringify(req.validRange) : null,
++      is_habit: req.isHabit ?? false,
++      grace_enabled: req.graceEnabled ?? false,
++    })
++    .returning('*')) as TrackerRow[];
++
++  const tracker = rowToTracker(inserted!);
++
++  // ---- Link categories (create on the fly) ----
++  if (req.categories && req.categories.length > 0) {
++    await linkCategories(userId, tracker.id, req.categories);
++  }
++
++  return tracker;
++}
++
++async function linkCategories(userId: string, trackerId: string, names: string[]): Promise<void> {
++  const knex = getKnex();
++
++  for (const name of names) {
++    const existing = (await knex('categories')
++      .where({ user_id: userId, name })
++      .select('id')
++      .first()) as { id: string } | undefined;
++
++    const categoryId =
++      existing?.id ??
++      ((
++        (await knex('categories')
++          .insert({ user_id: userId, name })
++          .returning('id')) as { id: string }[]
++      )[0]!.id);
++
++    await knex('tracker_categories')
++      .insert({ tracker_id: trackerId, category_id: categoryId })
++      .onConflict(['tracker_id', 'category_id'])
++      .ignore();
++  }
++}
++
++// ---------------------------------------------------------------------------
++// listTrackers
++// ---------------------------------------------------------------------------
++
++/**
++ * Lists a user's Trackers. By default excludes archived Trackers so the
++ * Dashboard only shows active ones (Req 2.5).
++ */
++export async function listTrackers(
++  userId: string,
++  options: { includeArchived?: boolean } = {},
++): Promise<Tracker[]> {
++  const knex = getKnex();
++  let query = knex('trackers').where({ user_id: userId });
++
++  if (!options.includeArchived) {
++    query = query.andWhere({ is_archived: false });
++  }
++
++  const rows = (await query.orderBy('created_at', 'asc')) as TrackerRow[];
++  return rows.map(rowToTracker);
++}
++
++// ---------------------------------------------------------------------------
++// updateTracker
++// ---------------------------------------------------------------------------
++
++/**
++ * Updates a Tracker's configuration. Historical Entries are never touched —
++ * this only changes the `trackers` row itself (Req 2.4).
++ *
++ * Requirements: 2.4
++ */
++export async function updateTracker(
++  userId: string,
++  trackerId: string,
++  updates: UpdateTrackerRequest,
++): Promise<Tracker | ValidationError | NotFoundError> {
++  if (updates.name !== undefined && !isValidName(updates.name)) {
++    return {
++      error: 'VALIDATION_ERROR',
++      message: 'A tracker name of 1-100 characters is required',
++      fields: { name: 'Name must be between 1 and 100 characters' },
++    } satisfies ValidationError;
++  }
++
++  const knex = getKnex();
++
++  const patch: Record<string, unknown> = {};
++  if (updates.name !== undefined) patch['name'] = updates.name;
++  if (updates.unit !== undefined) patch['unit'] = updates.unit;
++  if (updates.frequency !== undefined) patch['frequency'] = JSON.stringify(updates.frequency);
++  if (updates.validRange !== undefined) patch['valid_range'] = JSON.stringify(updates.validRange);
++  if (updates.isHabit !== undefined) patch['is_habit'] = updates.isHabit;
++  if (updates.graceEnabled !== undefined) patch['grace_enabled'] = updates.graceEnabled;
++
++  const rows = (await knex('trackers')
++    .where({ id: trackerId, user_id: userId })
++    .update(patch)
++    .returning('*')) as TrackerRow[];
++
++  const updated = rows[0];
++  if (!updated) {
++    return { error: 'NOT_FOUND', message: 'Tracker not found' } satisfies NotFoundError;
++  }
++
++  return rowToTracker(updated);
++}
++
++// ---------------------------------------------------------------------------
++// archiveTracker
++// ---------------------------------------------------------------------------
++
++/**
++ * Archives a Tracker: hides it from the Dashboard while preserving all
++ * associated Entries and Goals (Req 2.5). Archived trackers cannot be
++ * deleted while archived (Req 2.6) — enforced in deleteTracker below.
++ *
++ * Requirements: 2.5, 2.6
++ */
++export async function archiveTracker(
++  userId: string,
++  trackerId: string,
++): Promise<void | NotFoundError> {
++  const knex = getKnex();
++
++  const rows = (await knex('trackers')
++    .where({ id: trackerId, user_id: userId })
++    .update({ is_archived: true })
++    .returning('id')) as { id: string }[];
++
++  if (rows.length === 0) {
++    return { error: 'NOT_FOUND', message: 'Tracker not found' } satisfies NotFoundError;
++  }
++}
++
++// ---------------------------------------------------------------------------
++// deleteTracker
++// ---------------------------------------------------------------------------
++
++/**
++ * Permanently deletes a non-archived Tracker and all associated Entries and
++ * Goals (ON DELETE CASCADE handles the fan-out at the DB level).
++ *
++ * Archived trackers are blocked from deletion (Req 2.6) — the caller must
++ * unarchive first if they want to delete.
++ *
++ * Requirements: 2.6, 2.7
++ */
++export async function deleteTracker(
++  userId: string,
++  trackerId: string,
++): Promise<void | NotFoundError | ConflictError> {
++  const knex = getKnex();
++
++  const tracker = (await knex('trackers')
++    .where({ id: trackerId, user_id: userId })
++    .select('id', 'is_archived')
++    .first()) as { id: string; is_archived: boolean } | undefined;
++
++  if (!tracker) {
++    return { error: 'NOT_FOUND', message: 'Tracker not found' } satisfies NotFoundError;
++  }
++
++  if (tracker.is_archived) {
++    return {
++      error: 'CONFLICT',
++      message: 'Cannot delete an archived tracker; unarchive it first',
++    } satisfies ConflictError;
++  }
++
++  // ON DELETE CASCADE on entries, goals, streaks, reminders, tracker_categories
++  await knex('trackers').where({ id: trackerId, user_id: userId }).delete();
++}
+diff --git a/api/src/types/index.ts b/api/src/types/index.ts
+index 356ad5d..3ca1a48 100644
+--- a/api/src/types/index.ts
++++ b/api/src/types/index.ts
+@@ -49,6 +49,31 @@ export interface NotFoundError {
+   message: string;
+ }
+ 
++export interface LimitError {
++  error: 'LIMIT_ERROR';
++  message: string;
++}
++
++export interface ValidRange {
++  min: number;
++  max: number;
++}
++
++export interface Tracker {
++  id: string;
++  userId: string;
++  name: string;
++  dataType: TrackerDataType;
++  unit: string | null;
++  frequency: TrackerFrequency;
++  validRange: ValidRange | null;
++  isHabit: boolean;
++  graceEnabled: boolean;
++  isArchived: boolean;
++  isBuiltin: boolean;
++  createdAt: string;
++}
++
+ export interface InternalError {
+   error: 'INTERNAL_ERROR';
+   message: string;
+diff --git a/package-lock.json b/package-lock.json
+index 246b26d..23bfe3f 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -5668,7 +5668,7 @@
+       "version": "15.7.15",
+       "resolved": "https://registry.npmjs.org/@types/prop-types/-/prop-types-15.7.15.tgz",
+       "integrity": "sha512-F6bEyamV9jKGAFBEmlQnesRPGOQqS2+Uwi0Em15xenOxHaf2hv6L8YCVn3rPdPJOiJfPiCnLIRyvwVaqMY3MIw==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/@types/qs": {
+@@ -5689,7 +5689,7 @@
+       "version": "18.2.79",
+       "resolved": "https://registry.npmjs.org/@types/react/-/react-18.2.79.tgz",
+       "integrity": "sha512-RwGAGXPl9kSXwdNTafkOEuFrTBD5SA2B3iEB96xi8+xu5ddUa/cpvyVCSNn+asgLCTHkb5ZxN8gbuibYJi4s1w==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+         "@types/prop-types": "*",
+@@ -6176,7 +6176,6 @@
+       "version": "6.15.0",
+       "resolved": "https://registry.npmjs.org/ajv/-/ajv-6.15.0.tgz",
+       "integrity": "sha512-fgFx7Hfoq60ytK2c7DhnF8jIvzYgOMxfugjLOSMHjLIPgenqa7S7oaagATUq99mV6IYvN2tRmC0wnTYX6iPbMw==",
+-      "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "fast-deep-equal": "^3.1.1",
+@@ -8083,7 +8082,7 @@
+       "version": "3.2.3",
+       "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
+       "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/dag-map": {
+@@ -9776,7 +9775,6 @@
+       "version": "2.1.0",
+       "resolved": "https://registry.npmjs.org/fast-json-stable-stringify/-/fast-json-stable-stringify-2.1.0.tgz",
+       "integrity": "sha512-lhd/wF+Lk98HZoTCtlVraHtfh5XYijIjalXck7saUtuanSDyLMxnHhSXEDJqHxD7msR8D0uCmqlkwjCV8xvwHw==",
+-      "dev": true,
+       "license": "MIT"
+     },
+     "node_modules/fast-levenshtein": {
+@@ -12944,7 +12942,6 @@
+       "version": "0.4.1",
+       "resolved": "https://registry.npmjs.org/json-schema-traverse/-/json-schema-traverse-0.4.1.tgz",
+       "integrity": "sha512-xbbCH5dCYU5T8LcEhhuh7HJ88HXuW3qsI3Y0zOZFKfZEHcpWiHU/Jxzk629Brsab/mMiHQti9wMP+845RPe3Vg==",
+-      "dev": true,
+       "license": "MIT"
+     },
+     "node_modules/json-stable-stringify-without-jsonify": {
+@@ -18817,7 +18814,7 @@
+       "version": "5.4.5",
+       "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.4.5.tgz",
+       "integrity": "sha512-vcI4UpRgg81oIRUFwR0WSIHKt11nJ7SAVlYNIu+QpqeyXP+gpQJy/Z4+F0aGxSE4MqwjyXvW/TzgkLAx2AGHwQ==",
+-      "dev": true,
++      "devOptional": true,
+       "license": "Apache-2.0",
+       "bin": {
+         "tsc": "bin/tsc",
+@@ -19014,7 +19011,6 @@
+       "version": "4.4.1",
+       "resolved": "https://registry.npmjs.org/uri-js/-/uri-js-4.4.1.tgz",
+       "integrity": "sha512-7rKUyy33Q1yc98pQ1DAmLtwX109F7TIfWlW1Ydo8Wl1ii1SeHieeh0HHfPeL2fMXK6z0s8ecKs9frCuLJvndBg==",
+-      "dev": true,
+       "license": "BSD-2-Clause",
+       "dependencies": {
+         "punycode": "^2.1.0"

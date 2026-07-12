@@ -14,6 +14,9 @@ let redisInstance: IORedis | null = null;
 export function getKnex(): KnexType {
   if (!knexInstance) {
     const env = process.env['NODE_ENV'] ?? 'development';
+    if (env === 'production' && !process.env['DATABASE_URL']) {
+      throw new Error('DATABASE_URL environment variable is required in production');
+    }
     const config = knexConfig[env] ?? knexConfig['development'];
     knexInstance = Knex(config!);
   }
