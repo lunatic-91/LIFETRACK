@@ -59,6 +59,12 @@ interface TrackerRow {
   created_at: string | Date;
 }
 
+/**
+ * The pg driver already deserializes JSONB columns before knex sees them, so
+ * `valid_range` arrives as an object (or null) — never as JSON text. This
+ * only guards against the rare case of a raw string sneaking through (e.g.
+ * a test double), and is safe because valid_range is never itself a string.
+ */
 function parseJsonbColumn<T>(value: T | string | null): T | null {
   if (value === null) return null;
   return typeof value === 'string' ? (JSON.parse(value) as T) : value;
@@ -71,7 +77,9 @@ function rowToTracker(row: TrackerRow): Tracker {
     name: row.name,
     dataType: row.data_type,
     unit: row.unit,
-    frequency: parseJsonbColumn<TrackerFrequency>(row.frequency) as TrackerFrequency,
+    // frequency can legitimately BE a string ('daily' | 'weekly'), already
+    // deserialized by pg — never re-parse it as JSON text.
+    frequency: row.frequency as TrackerFrequency,
     validRange: parseJsonbColumn<ValidRange>(row.valid_range),
     isHabit: row.is_habit,
     graceEnabled: row.grace_enabled,

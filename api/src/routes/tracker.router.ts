@@ -14,10 +14,12 @@ import {
   archiveTracker,
   deleteTracker,
 } from '../services/tracker.service';
+import entryRouter from './entry.router';
 
 const router = Router();
 
 router.use(requireAuth);
+router.use('/:id/entries', entryRouter);
 
 // POST /trackers
 router.post('/', async (req: Request, res: Response) => {

@@ -1,0 +1,738 @@
+diff --git a/api/src/__tests__/properties/entry.property.test.ts b/api/src/__tests__/properties/entry.property.test.ts
+new file mode 100644
+index 0000000..cf38b30
+--- /dev/null
++++ b/api/src/__tests__/properties/entry.property.test.ts
+@@ -0,0 +1,156 @@
++/**
++ * Property-based tests for entry.service — note truncation.
++ * Feature: lifetrack-app
++ *
++ * UNIT tests. getKnex() is mocked with an in-memory fake table so the
++ * property is checked against controlled state.
++ */
++
++import * as fc from 'fast-check';
++
++// ---------------------------------------------------------------------------
++// In-memory fake Postgres for a single numeric tracker with no valid_range
++// ---------------------------------------------------------------------------
++
++interface FakeEntryRow {
++  id: string;
++  tracker_id: string;
++  user_id: string;
++  value_numeric: number | null;
++  value_boolean: boolean | null;
++  value_text: string | null;
++  note: string | null;
++  local_date: string;
++  local_timestamp: string;
++  edit_timestamp: string | null;
++}
++
++function makeFakeKnex(trackerRow: Record<string, unknown>, entries: Map<string, FakeEntryRow>) {
++  let idCounter = 0;
++
++  return (table: 'trackers' | 'entries') => {
++    const state: { whereClause: Record<string, unknown> } = { whereClause: {} };
++
++    const builder: Record<string, unknown> = {
++      where(clause: Record<string, unknown>) {
++        state.whereClause = { ...state.whereClause, ...clause };
++        return builder;
++      },
++      select() {
++        return builder;
++      },
++      async first() {
++        if (table === 'trackers') {
++          return matchesAll(trackerRow, state.whereClause) ? trackerRow : undefined;
++        }
++        for (const row of entries.values()) {
++          if (matchesAll(row as unknown as Record<string, unknown>, state.whereClause)) return row;
++        }
++        return undefined;
++      },
++      insert(data: Record<string, unknown>) {
++        const id = `entry-${idCounter++}`;
++        const row = { id, ...data } as FakeEntryRow;
++        return {
++          async returning() {
++            entries.set(id, row);
++            return [row];
++          },
++        };
++      },
++      update(patch: Record<string, unknown>) {
++        return {
++          async returning() {
++            const updated: FakeEntryRow[] = [];
++            for (const [id, row] of entries) {
++              if (matchesAll(row as unknown as Record<string, unknown>, state.whereClause)) {
++                const merged = { ...row, ...patch } as FakeEntryRow;
++                entries.set(id, merged);
++                updated.push(merged);
++              }
++            }
++            return updated;
++          },
++        };
++      },
++    };
++    return builder;
++  };
++}
++
++function matchesAll(row: Record<string, unknown>, clause: Record<string, unknown>): boolean {
++  return Object.entries(clause).every(([k, v]) => row[k] === v);
++}
++
++jest.mock('../../db/client', () => ({ getKnex: jest.fn() }));
++
++import { logEntry } from '../../services/entry.service';
++import { getKnex } from '../../db/client';
++
++// ---------------------------------------------------------------------------
++// Property 9: Note truncation to exactly 500 characters
++// Validates: Requirements 3.8
++// ---------------------------------------------------------------------------
++
++describe('Property 9: Note truncation to exactly 500 characters', () => {
++  // Feature: lifetrack-app, Property 9: Note truncation to exactly 500 characters
++
++  test('for any note longer than 500 chars, stored note is truncated to exactly 500 and flagged', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        fc.string({ minLength: 501, maxLength: 2000 }),
++        fc.integer({ min: 0, max: 1000 }),
++        async (note, value) => {
++          const trackerRow = {
++            id: 'tracker-1',
++            user_id: 'user-1',
++            data_type: 'numeric',
++            valid_range: null,
++          };
++          const entries = new Map<string, FakeEntryRow>();
++          (getKnex as jest.Mock).mockReturnValue(makeFakeKnex(trackerRow, entries) as unknown);
++
++          const result = await logEntry('user-1', 'tracker-1', {
++            value,
++            note,
++            localDate: '2026-07-12',
++            localTimestamp: '2026-07-12T10:00:00.000Z',
++          });
++
++          expect('entry' in result).toBe(true);
++          const logResult = result as { entry: { note: string | null }; noteTruncated: boolean };
++          expect(logResult.entry.note).toHaveLength(500);
++          expect(logResult.entry.note).toBe(note.slice(0, 500));
++          expect(logResult.noteTruncated).toBe(true);
++        },
++      ),
++    );
++  });
++
++  test('notes of 500 chars or fewer are stored unchanged and not flagged', async () => {
++    await fc.assert(
++      fc.asyncProperty(fc.string({ minLength: 0, maxLength: 500 }), async (note) => {
++        const trackerRow = {
++          id: 'tracker-1',
++          user_id: 'user-1',
++          data_type: 'numeric',
++          valid_range: null,
++        };
++        const entries = new Map<string, FakeEntryRow>();
++        (getKnex as jest.Mock).mockReturnValue(makeFakeKnex(trackerRow, entries) as unknown);
++
++        const result = await logEntry('user-1', 'tracker-1', {
++          value: 5,
++          note,
++          localDate: '2026-07-12',
++          localTimestamp: '2026-07-12T10:00:00.000Z',
++        });
++
++        expect('entry' in result).toBe(true);
++        const logResult = result as { entry: { note: string | null }; noteTruncated: boolean };
++        expect(logResult.entry.note).toBe(note);
++        expect(logResult.noteTruncated).toBe(false);
++      }),
++    );
++  });
++});
+diff --git a/api/src/__tests__/properties/tracker.property.test.ts b/api/src/__tests__/properties/tracker.property.test.ts
+index fedd2f1..b3b5e33 100644
+--- a/api/src/__tests__/properties/tracker.property.test.ts
++++ b/api/src/__tests__/properties/tracker.property.test.ts
+@@ -70,7 +70,7 @@ jest.mock('../../db/client', () => ({
+   getKnex: jest.fn(),
+ }));
+ 
+-import { deleteTracker } from '../../services/tracker.service';
++import { deleteTracker, updateTracker } from '../../services/tracker.service';
+ import { getKnex } from '../../db/client';
+ 
+ // ---------------------------------------------------------------------------
+@@ -141,3 +141,91 @@ describe('Property 7: Cascade delete removes tracker and all associated data', (
+     expect(db.trackers.has(trackerId)).toBe(true);
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// Property 6: Tracker config update does not mutate historical entries
++// Validates: Requirements 2.4
++// ---------------------------------------------------------------------------
++
++interface FakeEntryRow {
++  id: string;
++  tracker_id: string;
++  value_numeric: number;
++  note: string;
++  local_date: string;
++  local_timestamp: string;
++}
++
++function makeUpdateFakeKnex(trackerRow: Record<string, unknown>, entries: FakeEntryRow[]) {
++  return (table: 'trackers' | 'entries') => {
++    const state: { whereClause: Record<string, unknown> } = { whereClause: {} };
++    const builder: Record<string, unknown> = {
++      where(clause: Record<string, unknown>) {
++        state.whereClause = { ...state.whereClause, ...clause };
++        return builder;
++      },
++      update(patch: Record<string, unknown>) {
++        return {
++          async returning() {
++            if (table === 'trackers' && matches(trackerRow, state.whereClause)) {
++              Object.assign(trackerRow, patch);
++              return [trackerRow];
++            }
++            return [];
++          },
++        };
++      },
++    };
++    return builder;
++  };
++}
++
++describe('Property 6: Tracker config update does not mutate historical entries', () => {
++  // Feature: lifetrack-app, Property 6: Tracker config update does not mutate historical entries
++
++  test('for any tracker + entries, updating tracker config leaves entries unchanged', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        arbitraryTracker(),
++        fc.string({ minLength: 1, maxLength: 100 }),
++        fc.array(
++          fc.record({
++            id: fc.uuid(),
++            value_numeric: fc.integer({ min: 0, max: 1000 }),
++            note: fc.string({ minLength: 0, maxLength: 100 }),
++            local_date: fc.constant('2026-07-12'),
++            local_timestamp: fc.constant('2026-07-12T10:00:00.000Z'),
++          }),
++          { minLength: 0, maxLength: 10 },
++        ),
++        async (trackerConfig, newName, rawEntries) => {
++          const trackerId = 'tracker-1';
++          const trackerRow: Record<string, unknown> = {
++            id: trackerId,
++            user_id: 'user-1',
++            name: trackerConfig.name,
++            unit: trackerConfig.unit ?? null,
++            data_type: trackerConfig.dataType,
++            frequency: trackerConfig.frequency,
++            valid_range: trackerConfig.validRange ?? null,
++            is_habit: trackerConfig.isHabit,
++            grace_enabled: trackerConfig.graceEnabled,
++            is_archived: false,
++            is_builtin: false,
++            created_at: '2026-01-01T00:00:00.000Z',
++          };
++          const entries: FakeEntryRow[] = rawEntries.map((e) => ({ ...e, tracker_id: trackerId }));
++          const entriesSnapshotBefore = JSON.parse(JSON.stringify(entries)) as FakeEntryRow[];
++
++          (getKnex as jest.Mock).mockReturnValue(makeUpdateFakeKnex(trackerRow, entries) as unknown);
++
++          await updateTracker('user-1', trackerId, { name: newName });
++
++          // The update path never touches the entries table, so the fake
++          // store's entries array must still equal the pre-update snapshot.
++          expect(entries).toEqual(entriesSnapshotBefore);
++        },
++      ),
++    );
++  });
++});
+diff --git a/api/src/routes/entry.router.ts b/api/src/routes/entry.router.ts
+new file mode 100644
+index 0000000..53bbc26
+--- /dev/null
++++ b/api/src/routes/entry.router.ts
+@@ -0,0 +1,72 @@
++/**
++ * Entry routes: log, list, edit — nested under /trackers/:id/entries
++ * Requirements: 3.1-3.9
++ */
++
++import { Router } from 'express';
++import type { Request, Response } from 'express';
++
++import { requireAuth } from '../middleware/auth.middleware';
++import { logEntry, listEntries, editEntry } from '../services/entry.service';
++
++const router = Router({ mergeParams: true });
++
++router.use(requireAuth);
++
++// POST /trackers/:id/entries
++router.post('/', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const trackerId = req.params['id']!;
++
++  const result = await logEntry(userId, trackerId, req.body);
++
++  if ('error' in result) {
++    const status =
++      result.error === 'NOT_FOUND' ? 404 : result.error === 'CONFLICT' ? 409 : 400;
++    res.status(status).json(result);
++    return;
++  }
++
++  if (result.noteTruncated) {
++    res.set('X-Note-Truncated', 'true');
++  }
++  res.status(201).json(result.entry);
++});
++
++// GET /trackers/:id/entries
++router.get('/', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const trackerId = req.params['id']!;
++  const { start, end, limit, offset } = req.query as Record<string, string | undefined>;
++
++  const entries = await listEntries(userId, trackerId, {
++    ...(start ? { start } : {}),
++    ...(end ? { end } : {}),
++    ...(limit ? { limit: Number(limit) } : {}),
++    ...(offset ? { offset: Number(offset) } : {}),
++  });
++
++  res.status(200).json(entries);
++});
++
++// PATCH /trackers/:id/entries/:eid
++router.patch('/:eid', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const trackerId = req.params['id']!;
++  const entryId = req.params['eid']!;
++
++  const result = await editEntry(userId, trackerId, entryId, req.body);
++
++  if ('error' in result) {
++    const status = result.error === 'NOT_FOUND' ? 404 : 400;
++    res.status(status).json(result);
++    return;
++  }
++
++  if (result.noteTruncated) {
++    res.set('X-Note-Truncated', 'true');
++  }
++  res.status(200).json(result.entry);
++});
++
++export default router;
+diff --git a/api/src/routes/tracker.router.ts b/api/src/routes/tracker.router.ts
+index 5cb7eba..6fbfdbc 100644
+--- a/api/src/routes/tracker.router.ts
++++ b/api/src/routes/tracker.router.ts
+@@ -14,10 +14,12 @@ import {
+   archiveTracker,
+   deleteTracker,
+ } from '../services/tracker.service';
++import entryRouter from './entry.router';
+ 
+ const router = Router();
+ 
+ router.use(requireAuth);
++router.use('/:id/entries', entryRouter);
+ 
+ // POST /trackers
+ router.post('/', async (req: Request, res: Response) => {
+diff --git a/api/src/services/entry.service.ts b/api/src/services/entry.service.ts
+new file mode 100644
+index 0000000..0a0da5c
+--- /dev/null
++++ b/api/src/services/entry.service.ts
+@@ -0,0 +1,320 @@
++import { getKnex } from '../db/client';
++import type { Entry, ValidationError, ConflictError, NotFoundError, ValidRange } from '../types';
++
++// ---------------------------------------------------------------------------
++// Constants
++// ---------------------------------------------------------------------------
++
++const MAX_NOTE_LENGTH = 500;
++const MAX_TEXT_VALUE_LENGTH = 500;
++
++// ---------------------------------------------------------------------------
++// Types
++// ---------------------------------------------------------------------------
++
++export interface LogEntryRequest {
++  value: number | boolean | string;
++  note?: string;
++  localDate: string; // YYYY-MM-DD, computed client-side from the user's local time
++  localTimestamp: string; // ISO 8601
++  confirmOverwrite?: boolean;
++}
++
++export interface EditEntryRequest {
++  value?: number | boolean | string;
++  note?: string;
++}
++
++export interface LogEntryResult {
++  entry: Entry;
++  noteTruncated: boolean;
++}
++
++interface TrackerRow {
++  id: string;
++  user_id: string;
++  data_type: 'numeric' | 'boolean' | 'text';
++  valid_range: ValidRange | string | null;
++}
++
++interface EntryRow {
++  id: string;
++  tracker_id: string;
++  user_id: string;
++  value_numeric: string | null;
++  value_boolean: boolean | null;
++  value_text: string | null;
++  note: string | null;
++  local_date: string;
++  local_timestamp: string | Date;
++  edit_timestamp: string | Date | null;
++}
++
++// ---------------------------------------------------------------------------
++// Row <-> domain mapping
++// ---------------------------------------------------------------------------
++
++function extractValue(row: EntryRow): number | boolean | string {
++  if (row.value_numeric !== null) return Number(row.value_numeric);
++  if (row.value_boolean !== null) return row.value_boolean;
++  return row.value_text ?? '';
++}
++
++function rowToEntry(row: EntryRow): Entry {
++  return {
++    id: row.id,
++    trackerId: row.tracker_id,
++    userId: row.user_id,
++    value: extractValue(row),
++    note: row.note,
++    localDate: row.local_date,
++    localTimestamp: new Date(row.local_timestamp).toISOString(),
++    editTimestamp: row.edit_timestamp ? new Date(row.edit_timestamp).toISOString() : null,
++  };
++}
++
++function valueColumns(
++  dataType: TrackerRow['data_type'],
++  value: number | boolean | string,
++): { value_numeric: number | null; value_boolean: boolean | null; value_text: string | null } {
++  return {
++    value_numeric: dataType === 'numeric' ? (value as number) : null,
++    value_boolean: dataType === 'boolean' ? (value as boolean) : null,
++    value_text: dataType === 'text' ? (value as string) : null,
++  };
++}
++
++// ---------------------------------------------------------------------------
++// Validation helpers
++// ---------------------------------------------------------------------------
++
++function parseValidRange(raw: ValidRange | string | null): ValidRange | null {
++  if (raw === null) return null;
++  return typeof raw === 'string' ? (JSON.parse(raw) as ValidRange) : raw;
++}
++
++function validateValue(
++  tracker: TrackerRow,
++  value: number | boolean | string,
++): string | null {
++  switch (tracker.data_type) {
++    case 'numeric': {
++      if (typeof value !== 'number' || Number.isNaN(value)) {
++        return 'Value must be a number';
++      }
++      const range = parseValidRange(tracker.valid_range);
++      if (range && (value < range.min || value > range.max)) {
++        return `Value must be between ${range.min} and ${range.max}`;
++      }
++      return null;
++    }
++    case 'boolean':
++      if (typeof value !== 'boolean') {
++        return 'Value must be true or false';
++      }
++      return null;
++    case 'text':
++      if (typeof value !== 'string') {
++        return 'Value must be text';
++      }
++      if (value.length > MAX_TEXT_VALUE_LENGTH) {
++        return `Text value must be at most ${MAX_TEXT_VALUE_LENGTH} characters`;
++      }
++      return null;
++    default:
++      return 'Unknown tracker data type';
++  }
++}
++
++// ---------------------------------------------------------------------------
++// logEntry
++// ---------------------------------------------------------------------------
++
++/**
++ * Logs an Entry for a Tracker on the user's local calendar day.
++ *
++ * Steps:
++ *  1. Look up the tracker (must belong to the user).
++ *  2. Validate the value against the tracker's data type / valid range.
++ *  3. Truncate an over-long note to exactly 500 chars (Req 3.8 / Property 9).
++ *  4. If an Entry already exists for that tracker+day:
++ *       - without confirmOverwrite  -> ConflictError with existingEntryId (Req 3.3)
++ *       - with confirmOverwrite     -> update value/note, set edit_timestamp (Req 3.4)
++ *  5. Otherwise insert a new Entry.
++ *
++ * Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.7, 3.8
++ */
++export async function logEntry(
++  userId: string,
++  trackerId: string,
++  req: LogEntryRequest,
++): Promise<LogEntryResult | ValidationError | ConflictError | NotFoundError> {
++  const knex = getKnex();
++
++  const tracker = (await knex('trackers')
++    .where({ id: trackerId, user_id: userId })
++    .select('id', 'user_id', 'data_type', 'valid_range')
++    .first()) as TrackerRow | undefined;
++
++  if (!tracker) {
++    return { error: 'NOT_FOUND', message: 'Tracker not found' } satisfies NotFoundError;
++  }
++
++  // ---- Validate value ----
++  const valueError = validateValue(tracker, req.value);
++  if (valueError) {
++    return {
++      error: 'VALIDATION_ERROR',
++      message: valueError,
++      fields: { value: valueError },
++    } satisfies ValidationError;
++  }
++
++  // ---- Truncate note (Req 3.8 / Property 9) ----
++  let note: string | null = req.note ?? null;
++  let noteTruncated = false;
++  if (note !== null && note.length > MAX_NOTE_LENGTH) {
++    note = note.slice(0, MAX_NOTE_LENGTH);
++    noteTruncated = true;
++  }
++
++  const valueCols = valueColumns(tracker.data_type, req.value);
++
++  // ---- Check for an existing Entry on this tracker+day ----
++  const existing = (await knex('entries')
++    .where({ tracker_id: trackerId, local_date: req.localDate })
++    .select('id')
++    .first()) as { id: string } | undefined;
++
++  if (existing) {
++    if (!req.confirmOverwrite) {
++      return {
++        error: 'CONFLICT',
++        message: 'An entry already exists for this tracker today',
++        existingEntryId: existing.id,
++      } satisfies ConflictError;
++    }
++
++    // ---- Overwrite confirmed: update in place, keep original timestamp ----
++    const [updated] = (await knex('entries')
++      .where({ id: existing.id })
++      .update({
++        ...valueCols,
++        note,
++        edit_timestamp: new Date(),
++      })
++      .returning('*')) as EntryRow[];
++
++    return { entry: rowToEntry(updated!), noteTruncated };
++  }
++
++  // ---- Insert new Entry ----
++  const [inserted] = (await knex('entries')
++    .insert({
++      tracker_id: trackerId,
++      user_id: userId,
++      ...valueCols,
++      note,
++      local_date: req.localDate,
++      local_timestamp: req.localTimestamp,
++    })
++    .returning('*')) as EntryRow[];
++
++  return { entry: rowToEntry(inserted!), noteTruncated };
++}
++
++// ---------------------------------------------------------------------------
++// listEntries
++// ---------------------------------------------------------------------------
++
++export interface ListEntriesOptions {
++  start?: string; // YYYY-MM-DD
++  end?: string; // YYYY-MM-DD
++  limit?: number;
++  offset?: number;
++}
++
++export async function listEntries(
++  userId: string,
++  trackerId: string,
++  options: ListEntriesOptions = {},
++): Promise<Entry[]> {
++  const knex = getKnex();
++
++  let query = knex('entries').where({ tracker_id: trackerId, user_id: userId });
++
++  if (options.start) query = query.andWhere('local_date', '>=', options.start);
++  if (options.end) query = query.andWhere('local_date', '<=', options.end);
++
++  query = query.orderBy('local_date', 'desc');
++
++  if (options.limit) query = query.limit(options.limit);
++  if (options.offset) query = query.offset(options.offset);
++
++  const rows = (await query) as EntryRow[];
++  return rows.map(rowToEntry);
++}
++
++// ---------------------------------------------------------------------------
++// editEntry
++// ---------------------------------------------------------------------------
++
++/**
++ * Edits a past Entry's value and/or note. Always records an edit_timestamp
++ * alongside the original local_timestamp (Req 3.6).
++ *
++ * Requirements: 3.6, 3.7, 3.8
++ */
++export async function editEntry(
++  userId: string,
++  trackerId: string,
++  entryId: string,
++  updates: EditEntryRequest,
++): Promise<LogEntryResult | ValidationError | NotFoundError> {
++  const knex = getKnex();
++
++  const tracker = (await knex('trackers')
++    .where({ id: trackerId, user_id: userId })
++    .select('id', 'user_id', 'data_type', 'valid_range')
++    .first()) as TrackerRow | undefined;
++
++  if (!tracker) {
++    return { error: 'NOT_FOUND', message: 'Tracker not found' } satisfies NotFoundError;
++  }
++
++  const patch: Record<string, unknown> = { edit_timestamp: new Date() };
++  let noteTruncated = false;
++
++  if (updates.value !== undefined) {
++    const valueError = validateValue(tracker, updates.value);
++    if (valueError) {
++      return {
++        error: 'VALIDATION_ERROR',
++        message: valueError,
++        fields: { value: valueError },
++      } satisfies ValidationError;
++    }
++    Object.assign(patch, valueColumns(tracker.data_type, updates.value));
++  }
++
++  if (updates.note !== undefined) {
++    let note = updates.note;
++    if (note.length > MAX_NOTE_LENGTH) {
++      note = note.slice(0, MAX_NOTE_LENGTH);
++      noteTruncated = true;
++    }
++    patch['note'] = note;
++  }
++
++  const rows = (await knex('entries')
++    .where({ id: entryId, tracker_id: trackerId, user_id: userId })
++    .update(patch)
++    .returning('*')) as EntryRow[];
++
++  const updated = rows[0];
++  if (!updated) {
++    return { error: 'NOT_FOUND', message: 'Entry not found' } satisfies NotFoundError;
++  }
++
++  return { entry: rowToEntry(updated), noteTruncated };
++}
+diff --git a/api/src/services/tracker.service.ts b/api/src/services/tracker.service.ts
+index a5ca26f..dfc66ae 100644
+--- a/api/src/services/tracker.service.ts
++++ b/api/src/services/tracker.service.ts
+@@ -59,6 +59,12 @@ interface TrackerRow {
+   created_at: string | Date;
+ }
+ 
++/**
++ * The pg driver already deserializes JSONB columns before knex sees them, so
++ * `valid_range` arrives as an object (or null) — never as JSON text. This
++ * only guards against the rare case of a raw string sneaking through (e.g.
++ * a test double), and is safe because valid_range is never itself a string.
++ */
+ function parseJsonbColumn<T>(value: T | string | null): T | null {
+   if (value === null) return null;
+   return typeof value === 'string' ? (JSON.parse(value) as T) : value;
+@@ -71,7 +77,9 @@ function rowToTracker(row: TrackerRow): Tracker {
+     name: row.name,
+     dataType: row.data_type,
+     unit: row.unit,
+-    frequency: parseJsonbColumn<TrackerFrequency>(row.frequency) as TrackerFrequency,
++    // frequency can legitimately BE a string ('daily' | 'weekly'), already
++    // deserialized by pg — never re-parse it as JSON text.
++    frequency: row.frequency as TrackerFrequency,
+     validRange: parseJsonbColumn<ValidRange>(row.valid_range),
+     isHabit: row.is_habit,
+     graceEnabled: row.grace_enabled,
+diff --git a/api/src/types/index.ts b/api/src/types/index.ts
+index 3ca1a48..ee8cd86 100644
+--- a/api/src/types/index.ts
++++ b/api/src/types/index.ts
+@@ -74,6 +74,17 @@ export interface Tracker {
+   createdAt: string;
+ }
+ 
++export interface Entry {
++  id: string;
++  trackerId: string;
++  userId: string;
++  value: number | boolean | string;
++  note: string | null;
++  localDate: string; // YYYY-MM-DD
++  localTimestamp: string;
++  editTimestamp: string | null;
++}
++
+ export interface InternalError {
+   error: 'INTERNAL_ERROR';
+   message: string;

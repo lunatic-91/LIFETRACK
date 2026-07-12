@@ -74,6 +74,17 @@ export interface Tracker {
   createdAt: string;
 }
 
+export interface Entry {
+  id: string;
+  trackerId: string;
+  userId: string;
+  value: number | boolean | string;
+  note: string | null;
+  localDate: string; // YYYY-MM-DD
+  localTimestamp: string;
+  editTimestamp: string | null;
+}
+
 export interface InternalError {
   error: 'INTERNAL_ERROR';
   message: string;
