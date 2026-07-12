@@ -90,3 +90,10 @@ export interface InternalError {
   message: string;
   correlationId: string;
 }
+
+export interface Streak {
+  trackerId: string;
+  currentStreak: number;
+  longestStreak: number;
+  lastCompletedDate: string | null; // YYYY-MM-DD
+}
