@@ -1,0 +1,30 @@
+diff --git a/api/src/__tests__/properties/entry.property.test.ts b/api/src/__tests__/properties/entry.property.test.ts
+index cf38b30..8b5384b 100644
+--- a/api/src/__tests__/properties/entry.property.test.ts
++++ b/api/src/__tests__/properties/entry.property.test.ts
+@@ -84,6 +84,25 @@ function matchesAll(row: Record<string, unknown>, clause: Record<string, unknown
+ 
+ jest.mock('../../db/client', () => ({ getKnex: jest.fn() }));
+ 
++// entry.service's post-save hooks (updateGoalProgress, enqueueInsightRecalc)
++// are fire-and-forget side effects unrelated to Property 9 (note truncation).
++// They're mocked out here rather than extended into the fake knex above,
++// for two reasons:
++//   1. `enqueueInsightRecalc` creates a real BullMQ `Queue`, which attempts
++//      a real Redis TCP connection on `.add()` — without this mock every
++//      property run pays a real `ECONNREFUSED` round-trip.
++//   2. `updateGoalProgress` issues knex calls (e.g. `.orderBy()`) that the
++//      minimal fake knex above — built only for entry.service's own
++//      trackers/entries queries — doesn't implement, so it throws.
++// Goal- and insight-specific behaviour is covered by their own dedicated
++// property tests (goal.property.test.ts, insight.property.test.ts).
++jest.mock('../../services/goal.service', () => ({
++  updateGoalProgress: jest.fn().mockResolvedValue(undefined),
++}));
++jest.mock('../../services/insight.service', () => ({
++  enqueueInsightRecalc: jest.fn().mockResolvedValue(undefined),
++}));
++
+ import { logEntry } from '../../services/entry.service';
+ import { getKnex } from '../../db/client';
+ 
