@@ -1,0 +1,39 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16.3-alpine
+    container_name: lifetrack-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lifetrack
+      POSTGRES_PASSWORD: lifetrack_dev
+      POSTGRES_DB: lifetrack_dev
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U lifetrack -d lifetrack_dev']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: lifetrack-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass lifetrack_redis_dev
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', 'lifetrack_redis_dev', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
