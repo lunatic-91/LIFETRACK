@@ -133,3 +133,35 @@ export interface CorrelationInsight {
 }
 
 export type Insight = TrendInsight | CorrelationInsight;
+
+export interface ExportRequest {
+  format: ExportFormat;
+  trackerId?: string;
+  startDate?: string; // YYYY-MM-DD
+  endDate?: string; // YYYY-MM-DD
+}
+
+export interface ExportRow {
+  trackerName: string;
+  entryDate: string;
+  entryValue: number | boolean | string;
+  entryNote: string;
+  category: string;
+}
+
+export interface ExportResult {
+  jobId: string;
+  status: 'completed';
+  downloadUrl: string;
+  entryCount: number;
+  generatedAt: string;
+}
+
+export interface ExportJobStatus {
+  jobId: string;
+  status: 'processing' | 'completed' | 'failed';
+  downloadUrl: string | null;
+  entryCount: number | null;
+  errorMessage: string | null;
+  generatedAt: string | null;
+}

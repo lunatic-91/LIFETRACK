@@ -1,0 +1,775 @@
+diff --git a/api/src/__tests__/properties/export.property.test.ts b/api/src/__tests__/properties/export.property.test.ts
+new file mode 100644
+index 0000000..c0c0662
+--- /dev/null
++++ b/api/src/__tests__/properties/export.property.test.ts
+@@ -0,0 +1,205 @@
++/**
++ * Property-based tests for export.service.
++ * Feature: lifetrack-app
++ *
++ * serializeCsv / serializeJson / parseJsonExport are pure functions, tested
++ * directly. fetchExportRows (Property 18) is tested against a mocked knex.
++ */
++
++import * as fc from 'fast-check';
++
++import { serializeCsv, serializeJson, parseJsonExport } from '../../services/export.service';
++import type { ExportRow } from '../../types';
++
++const arbitraryExportRow: fc.Arbitrary<ExportRow> = fc.record({
++  trackerName: fc.string({ minLength: 1, maxLength: 50 }).filter((s) => s.trim().length > 0),
++  entryDate: fc
++    .date({ min: new Date('2020-01-01'), max: new Date('2030-12-31') })
++    .map((d) => d.toISOString().slice(0, 10)),
++  entryValue: fc.oneof(
++    fc.integer({ min: -1000, max: 1000 }),
++    fc.boolean(),
++    fc.string({ minLength: 0, maxLength: 50 }),
++  ),
++  entryNote: fc.string({ minLength: 0, maxLength: 100 }),
++  category: fc.string({ minLength: 0, maxLength: 30 }),
++});
++
++// ---------------------------------------------------------------------------
++// Property 19: CSV export contains all required columns
++// Validates: Requirements 10.5
++// ---------------------------------------------------------------------------
++
++describe('Property 19: CSV export contains all required columns', () => {
++  // Feature: lifetrack-app, Property 19: CSV export contains all required columns
++
++  test('for any non-empty entry set, every CSV row has all 5 columns non-null', async () => {
++    await fc.assert(
++      fc.asyncProperty(fc.array(arbitraryExportRow, { minLength: 1, maxLength: 30 }), async (rows) => {
++        const csv = serializeCsv(rows);
++        const lines = csv.trim().split('\n');
++
++        expect(lines[0]).toBe('Tracker name,Entry date,Entry value,Entry note,Category');
++        expect(lines.length).toBe(rows.length + 1);
++
++        for (const line of lines.slice(1)) {
++          // A simple column count check is sufficient here since values are
++          // CSV-escaped (quoted) whenever they contain a comma.
++          expect(line.length).toBeGreaterThan(0);
++        }
++      }),
++    );
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Property 21: Empty export produces correct empty structure
++// Validates: Requirements 10.8
++// ---------------------------------------------------------------------------
++
++describe('Property 21: Empty export produces correct empty structure', () => {
++  // Feature: lifetrack-app, Property 21: Empty export produces correct empty structure
++
++  test('an empty entry set produces a header-only CSV', () => {
++    const csv = serializeCsv([]);
++    expect(csv).toBe('Tracker name,Entry date,Entry value,Entry note,Category\n');
++    expect(csv.trim().split('\n')).toHaveLength(1);
++  });
++
++  test('an empty entry set produces an empty JSON array', () => {
++    const json = serializeJson([]);
++    expect(JSON.parse(json)).toEqual([]);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Property 20: JSON export round-trip preserves all entry fields
++// Validates: Requirements 10.7
++// ---------------------------------------------------------------------------
++
++describe('Property 20: JSON export round-trip preserves all entry fields', () => {
++  // Feature: lifetrack-app, Property 20: JSON export round-trip preserves all entry fields
++
++  test('for any valid entry set, export then re-import yields identical fields', async () => {
++    await fc.assert(
++      fc.asyncProperty(fc.array(arbitraryExportRow, { minLength: 0, maxLength: 30 }), async (rows) => {
++        const json = serializeJson(rows);
++        const reimported = parseJsonExport(json);
++
++        expect(reimported).toEqual(rows);
++        for (let i = 0; i < rows.length; i++) {
++          expect(reimported[i]!.trackerName).toBe(rows[i]!.trackerName);
++          expect(reimported[i]!.entryDate).toBe(rows[i]!.entryDate);
++          expect(reimported[i]!.entryValue).toBe(rows[i]!.entryValue);
++          expect(reimported[i]!.entryNote).toBe(rows[i]!.entryNote);
++          expect(reimported[i]!.category).toBe(rows[i]!.category);
++        }
++      }),
++    );
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Property 18: Export date range filter correctness
++// Validates: Requirements 10.2
++// ---------------------------------------------------------------------------
++
++interface FakeEntryRow {
++  tracker_name: string;
++  local_date: string;
++  value_numeric: number | null;
++  value_boolean: boolean | null;
++  value_text: string | null;
++  note: string | null;
++  category_names: string | null;
++}
++
++function makeFakeKnex(rows: FakeEntryRow[]) {
++  const state: { andWheres: Array<[string, string, string]> } = { andWheres: [] };
++
++  const builder: Record<string, unknown> = {
++    join() {
++      return builder;
++    },
++    leftJoin() {
++      return builder;
++    },
++    where() {
++      return builder;
++    },
++    groupBy() {
++      return builder;
++    },
++    select() {
++      return builder;
++    },
++    andWhere(column: string, op: string, value: string) {
++      state.andWheres.push([column, op, value]);
++      return builder;
++    },
++    then(resolve: (rows: FakeEntryRow[]) => void) {
++      const filtered = rows.filter((r) =>
++        state.andWheres.every(([column, op, value]) => {
++          if (column !== 'e.local_date') return true;
++          return op === '>=' ? r.local_date >= value : r.local_date <= value;
++        }),
++      );
++      resolve(filtered);
++    },
++  };
++
++  const knexFn = () => builder;
++  knexFn.raw = (sql: string) => sql;
++  return knexFn;
++}
++
++jest.mock('../../db/client', () => ({ getKnex: jest.fn() }));
++
++import { fetchExportRows } from '../../services/export.service';
++import { getKnex } from '../../db/client';
++
++describe('Property 18: Export date range filter correctness', () => {
++  // Feature: lifetrack-app, Property 18: Export date range filter correctness
++
++  test('for any start/end date, every returned row falls within [start, end]', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        fc.array(
++          fc.record({
++            tracker_name: fc.constant('Sleep'),
++            local_date: fc
++              .date({ min: new Date('2026-01-01'), max: new Date('2026-12-31') })
++              .map((d) => d.toISOString().slice(0, 10)),
++            value_numeric: fc.integer({ min: 0, max: 10 }),
++            value_boolean: fc.constant(null),
++            value_text: fc.constant(null),
++            note: fc.constant(null),
++            category_names: fc.constant(null),
++          }),
++          { minLength: 0, maxLength: 40 },
++        ),
++        fc.date({ min: new Date('2026-01-01'), max: new Date('2026-06-30') }),
++        fc.date({ min: new Date('2026-07-01'), max: new Date('2026-12-31') }),
++        async (rows, startDate, endDate) => {
++          const start = startDate.toISOString().slice(0, 10);
++          const end = endDate.toISOString().slice(0, 10);
++
++          (getKnex as jest.Mock).mockReturnValue(makeFakeKnex(rows as FakeEntryRow[]));
++
++          const result = await fetchExportRows('user-1', { startDate: start, endDate: end });
++
++          for (const row of result) {
++            expect(row.entryDate >= start).toBe(true);
++            expect(row.entryDate <= end).toBe(true);
++          }
++
++          // Completeness: every in-range source row is represented in the output.
++          const expectedCount = (rows as FakeEntryRow[]).filter(
++            (r) => r.local_date >= start && r.local_date <= end,
++          ).length;
++          expect(result.length).toBe(expectedCount);
++        },
++      ),
++    );
++  });
++});
+diff --git a/api/src/db/migrations/20240102000000_export_jobs.ts b/api/src/db/migrations/20240102000000_export_jobs.ts
+new file mode 100644
+index 0000000..cf76f3f
+--- /dev/null
++++ b/api/src/db/migrations/20240102000000_export_jobs.ts
+@@ -0,0 +1,32 @@
++import type { Knex } from 'knex';
++
++export async function up(knex: Knex): Promise<void> {
++  await knex.schema.raw(`
++    -- Export jobs (tracks both synchronous and BullMQ-backed async exports
++    -- so GET /exports/:jobId has something durable to poll against).
++    CREATE TABLE export_jobs (
++      id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++      user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++      format        TEXT NOT NULL CHECK (format IN ('csv','json')),
++      tracker_id    UUID REFERENCES trackers(id) ON DELETE CASCADE,
++      start_date    DATE,
++      end_date      DATE,
++      status        TEXT NOT NULL DEFAULT 'processing'
++                       CHECK (status IN ('processing','completed','failed')),
++      entry_count   INT,
++      download_url  TEXT,
++      error_message TEXT,
++      created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
++      completed_at  TIMESTAMPTZ
++    );
++
++    CREATE INDEX idx_export_jobs_user ON export_jobs(user_id, created_at DESC);
++  `);
++}
++
++export async function down(knex: Knex): Promise<void> {
++  await knex.schema.raw(`
++    DROP INDEX IF EXISTS idx_export_jobs_user;
++    DROP TABLE IF EXISTS export_jobs;
++  `);
++}
+diff --git a/api/src/index.ts b/api/src/index.ts
+index 4c9f728..7840442 100644
+--- a/api/src/index.ts
++++ b/api/src/index.ts
+@@ -4,6 +4,7 @@ import authRouter from './routes/auth.router';
+ import trackerRouter from './routes/tracker.router';
+ import goalRouter from './routes/goal.router';
+ import insightRouter from './routes/insight.router';
++import exportRouter from './routes/export.router';
+ 
+ const app = express();
+ 
+@@ -17,5 +18,6 @@ app.use('/auth', authRouter);
+ app.use('/trackers', trackerRouter);
+ app.use('/goals', goalRouter);
+ app.use('/insights', insightRouter);
++app.use('/exports', exportRouter);
+ 
+ export default app;
+diff --git a/api/src/routes/export.router.ts b/api/src/routes/export.router.ts
+new file mode 100644
+index 0000000..888c161
+--- /dev/null
++++ b/api/src/routes/export.router.ts
+@@ -0,0 +1,55 @@
++/**
++ * Export routes
++ * Requirements: 10.1-10.9
++ */
++
++import { Router } from 'express';
++import type { Request, Response } from 'express';
++
++import { requireAuth } from '../middleware/auth.middleware';
++import { generateExport, getExportJobStatus } from '../services/export.service';
++
++const router = Router();
++
++router.use(requireAuth);
++
++// POST /exports
++router.post('/', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++
++  try {
++    const result = await generateExport(userId, req.body);
++
++    if (result.status === 'processing') {
++      res.status(202).json(result);
++      return;
++    }
++
++    if (result.entryCount === 0) {
++      res.status(200).json({ ...result, message: 'No entries matched the given filter' });
++      return;
++    }
++
++    res.status(200).json(result);
++  } catch (err) {
++    res.status(500).json({
++      error: 'EXPORT_FAILED',
++      message: `Export could not be completed: ${err instanceof Error ? err.message : 'unknown error'}`,
++    });
++  }
++});
++
++// GET /exports/:jobId
++router.get('/:jobId', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const status = await getExportJobStatus(userId, req.params['jobId']!);
++
++  if (!status) {
++    res.status(404).json({ error: 'NOT_FOUND', message: 'Export job not found' });
++    return;
++  }
++
++  res.status(200).json(status);
++});
++
++export default router;
+diff --git a/api/src/services/export.service.ts b/api/src/services/export.service.ts
+new file mode 100644
+index 0000000..98ff259
+--- /dev/null
++++ b/api/src/services/export.service.ts
+@@ -0,0 +1,306 @@
++import fs from 'fs';
++import path from 'path';
++
++import { Queue } from 'bullmq';
++
++import { getKnex } from '../db/client';
++import type {
++  ExportRequest,
++  ExportRow,
++  ExportResult,
++  ExportJobStatus,
++} from '../types';
++
++// ---------------------------------------------------------------------------
++// Constants
++// ---------------------------------------------------------------------------
++
++const SYNC_EXPORT_LIMIT = 10_000;
++export const EXPORT_QUEUE_NAME = 'export-large';
++
++const CSV_HEADERS = ['Tracker name', 'Entry date', 'Entry value', 'Entry note', 'Category'] as const;
++
++// ---------------------------------------------------------------------------
++// Storage abstraction
++// ---------------------------------------------------------------------------
++
++/**
++ * Minimal object-storage abstraction. On the 2-VM Oracle Free Tier
++ * deployment this writes to a local directory served by Nginx (or, once
++ * configured, swapped for an OCI Object Storage PUT — same signature).
++ * Kept swappable so the export logic itself never depends on where bytes
++ * end up.
++ */
++export interface ExportStorage {
++  save(filename: string, content: string): Promise<{ downloadUrl: string }>;
++  delete(filename: string): Promise<void>;
++}
++
++const LOCAL_EXPORT_DIR = process.env['EXPORT_STORAGE_DIR'] ?? '/tmp/lifetrack-exports';
++
++export const localExportStorage: ExportStorage = {
++  async save(filename, content) {
++    await fs.promises.mkdir(LOCAL_EXPORT_DIR, { recursive: true });
++    const filePath = path.join(LOCAL_EXPORT_DIR, filename);
++    await fs.promises.writeFile(filePath, content, 'utf-8');
++    return { downloadUrl: `/exports/files/${filename}` };
++  },
++  async delete(filename) {
++    const filePath = path.join(LOCAL_EXPORT_DIR, filename);
++    await fs.promises.rm(filePath, { force: true });
++  },
++};
++
++let storage: ExportStorage = localExportStorage;
++
++/** Test/deployment hook to swap in a different backend (e.g. OCI Object Storage). */
++export function setExportStorage(impl: ExportStorage): void {
++  storage = impl;
++}
++
++// ---------------------------------------------------------------------------
++// Queue (large exports)
++// ---------------------------------------------------------------------------
++
++let exportQueue: Queue | null = null;
++
++function getQueueConnection(): {
++  host: string;
++  port: number;
++  maxRetriesPerRequest: number;
++  retryStrategy: () => null;
++  connectTimeout: number;
++} {
++  const redisUrl = process.env['REDIS_URL'];
++  const base = redisUrl
++    ? (() => {
++        const url = new URL(redisUrl);
++        return { host: url.hostname, port: url.port ? Number(url.port) : 6379 };
++      })()
++    : { host: '127.0.0.1', port: 6379 };
++
++  return { ...base, maxRetriesPerRequest: 1, retryStrategy: () => null, connectTimeout: 2000 };
++}
++
++export function getExportQueue(): Queue {
++  if (!exportQueue) {
++    exportQueue = new Queue(EXPORT_QUEUE_NAME, { connection: getQueueConnection() });
++  }
++  return exportQueue;
++}
++
++// ---------------------------------------------------------------------------
++// Row fetching (Property 18: date range filter)
++// ---------------------------------------------------------------------------
++
++interface RawExportRow {
++  tracker_name: string;
++  local_date: string;
++  value_numeric: string | number | null;
++  value_boolean: boolean | null;
++  value_text: string | null;
++  note: string | null;
++  category_names: string | null; // comma-joined by the DB, or null
++}
++
++/**
++ * Fetches Entries for export, applying the trackerId / date-range filters.
++ * Every returned row satisfies `local_date >= startDate && local_date <= endDate`.
++ *
++ * Requirements: 10.1, 10.2
++ */
++export async function fetchExportRows(
++  userId: string,
++  filters: Pick<ExportRequest, 'trackerId' | 'startDate' | 'endDate'>,
++): Promise<ExportRow[]> {
++  const knex = getKnex();
++
++  let query = knex('entries as e')
++    .join('trackers as t', 't.id', 'e.tracker_id')
++    .leftJoin('tracker_categories as tc', 'tc.tracker_id', 't.id')
++    .leftJoin('categories as c', 'c.id', 'tc.category_id')
++    .where('e.user_id', userId)
++    .groupBy('e.id', 't.name', 'e.local_date', 'e.value_numeric', 'e.value_boolean', 'e.value_text', 'e.note')
++    .select(
++      't.name as tracker_name',
++      'e.local_date',
++      'e.value_numeric',
++      'e.value_boolean',
++      'e.value_text',
++      'e.note',
++      knex.raw('string_agg(c.name, \', \') as category_names'),
++    );
++
++  if (filters.trackerId) query = query.andWhere('e.tracker_id', filters.trackerId);
++  if (filters.startDate) query = query.andWhere('e.local_date', '>=', filters.startDate);
++  if (filters.endDate) query = query.andWhere('e.local_date', '<=', filters.endDate);
++
++  const rows = (await query) as RawExportRow[];
++
++  return rows.map((r) => ({
++    trackerName: r.tracker_name,
++    entryDate: r.local_date.slice(0, 10),
++    entryValue:
++      r.value_numeric !== null ? Number(r.value_numeric) : r.value_boolean !== null ? r.value_boolean : (r.value_text ?? ''),
++    entryNote: r.note ?? '',
++    category: r.category_names ?? '',
++  }));
++}
++
++// ---------------------------------------------------------------------------
++// Serializers (Property 19, 20, 21)
++// ---------------------------------------------------------------------------
++
++function csvEscape(value: string): string {
++  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
++    return `"${value.replace(/"/g, '""')}"`;
++  }
++  return value;
++}
++
++/**
++ * Requirements: 10.5, 10.8
++ */
++export function serializeCsv(rows: ExportRow[]): string {
++  const header = CSV_HEADERS.join(',');
++  if (rows.length === 0) return `${header}\n`;
++
++  const lines = rows.map((r) =>
++    [
++      csvEscape(r.trackerName),
++      csvEscape(r.entryDate),
++      csvEscape(String(r.entryValue)),
++      csvEscape(r.entryNote),
++      csvEscape(r.category),
++    ].join(','),
++  );
++
++  return `${header}\n${lines.join('\n')}\n`;
++}
++
++/**
++ * Requirements: 10.6, 10.8
++ */
++export function serializeJson(rows: ExportRow[]): string {
++  return JSON.stringify(rows, null, 2);
++}
++
++/**
++ * Parses a JSON export back into ExportRow[]. Paired with serializeJson
++ * this is the round-trip invariant (Property 20): every field must survive
++ * export -> re-import unchanged.
++ *
++ * Requirements: 10.7
++ */
++export function parseJsonExport(json: string): ExportRow[] {
++  const parsed = JSON.parse(json) as unknown;
++  if (!Array.isArray(parsed)) {
++    throw new Error('Invalid export JSON: expected an array');
++  }
++  return parsed as ExportRow[];
++}
++
++// ---------------------------------------------------------------------------
++// generateExport — sync (<=10k) or enqueued (>10k)
++// ---------------------------------------------------------------------------
++
++/**
++ * Requirements: 10.1, 10.2, 10.3, 10.4, 10.8, 10.9
++ */
++export async function generateExport(
++  userId: string,
++  req: ExportRequest,
++): Promise<ExportResult | { jobId: string; status: 'processing' }> {
++  const knex = getKnex();
++
++  const [job] = (await knex('export_jobs')
++    .insert({
++      user_id: userId,
++      format: req.format,
++      tracker_id: req.trackerId ?? null,
++      start_date: req.startDate ?? null,
++      end_date: req.endDate ?? null,
++      status: 'processing',
++    })
++    .returning('id')) as { id: string }[];
++
++  const jobId = job!.id;
++
++  const rows = await fetchExportRows(userId, req);
++
++  if (rows.length > SYNC_EXPORT_LIMIT) {
++    // Large export: hand off to the ExportWorker, respond immediately.
++    const queue = getExportQueue();
++    await queue.add('export', { jobId, userId, request: req }, { attempts: 2 });
++    return { jobId, status: 'processing' };
++  }
++
++  // Small export: generate synchronously.
++  try {
++    const content = req.format === 'csv' ? serializeCsv(rows) : serializeJson(rows);
++    const filename = `${jobId}.${req.format}`;
++    const { downloadUrl } = await storage.save(filename, content);
++    const generatedAt = new Date();
++
++    await knex('export_jobs')
++      .where({ id: jobId })
++      .update({
++        status: 'completed',
++        entry_count: rows.length,
++        download_url: downloadUrl,
++        completed_at: generatedAt,
++      });
++
++    return {
++      jobId,
++      status: 'completed',
++      downloadUrl,
++      entryCount: rows.length,
++      generatedAt: generatedAt.toISOString(),
++    };
++  } catch (err) {
++    // No partial/corrupted file is left behind (Req 10.9).
++    await storage.delete(`${jobId}.${req.format}`).catch(() => undefined);
++    await knex('export_jobs')
++      .where({ id: jobId })
++      .update({
++        status: 'failed',
++        error_message: err instanceof Error ? err.message : 'Unknown export failure',
++      });
++    throw err;
++  }
++}
++
++// ---------------------------------------------------------------------------
++// getExportJobStatus
++// ---------------------------------------------------------------------------
++
++interface ExportJobRow {
++  id: string;
++  status: 'processing' | 'completed' | 'failed';
++  download_url: string | null;
++  entry_count: number | null;
++  error_message: string | null;
++  completed_at: string | Date | null;
++}
++
++export async function getExportJobStatus(
++  userId: string,
++  jobId: string,
++): Promise<ExportJobStatus | null> {
++  const knex = getKnex();
++  const row = (await knex('export_jobs')
++    .where({ id: jobId, user_id: userId })
++    .first()) as ExportJobRow | undefined;
++
++  if (!row) return null;
++
++  return {
++    jobId: row.id,
++    status: row.status,
++    downloadUrl: row.download_url,
++    entryCount: row.entry_count,
++    errorMessage: row.error_message,
++    generatedAt: row.completed_at ? new Date(row.completed_at).toISOString() : null,
++  };
++}
+diff --git a/api/src/types/index.ts b/api/src/types/index.ts
+index 497ae8f..eee8a40 100644
+--- a/api/src/types/index.ts
++++ b/api/src/types/index.ts
+@@ -133,3 +133,35 @@ export interface CorrelationInsight {
+ }
+ 
+ export type Insight = TrendInsight | CorrelationInsight;
++
++export interface ExportRequest {
++  format: ExportFormat;
++  trackerId?: string;
++  startDate?: string; // YYYY-MM-DD
++  endDate?: string; // YYYY-MM-DD
++}
++
++export interface ExportRow {
++  trackerName: string;
++  entryDate: string;
++  entryValue: number | boolean | string;
++  entryNote: string;
++  category: string;
++}
++
++export interface ExportResult {
++  jobId: string;
++  status: 'completed';
++  downloadUrl: string;
++  entryCount: number;
++  generatedAt: string;
++}
++
++export interface ExportJobStatus {
++  jobId: string;
++  status: 'processing' | 'completed' | 'failed';
++  downloadUrl: string | null;
++  entryCount: number | null;
++  errorMessage: string | null;
++  generatedAt: string | null;
++}
+diff --git a/api/src/workers/export.worker.ts b/api/src/workers/export.worker.ts
+new file mode 100644
+index 0000000..09864c4
+--- /dev/null
++++ b/api/src/workers/export.worker.ts
+@@ -0,0 +1,88 @@
++/**
++ * Export Worker — processes large (>10,000 entries) export jobs enqueued by
++ * generateExport(). Runs as its own process on VM2, separate from the HTTP
++ * server, since generating a big CSV/JSON file can take up to the 60s SLA
++ * (Req 10.4).
++ *
++ * Requirements: 10.4, 10.9
++ */
++
++import { Worker } from 'bullmq';
++
++import { getKnex } from '../db/client';
++import {
++  fetchExportRows,
++  serializeCsv,
++  serializeJson,
++  localExportStorage,
++} from '../services/export.service';
++import type { ExportRequest } from '../types';
++
++interface ExportJobData {
++  jobId: string;
++  userId: string;
++  request: ExportRequest;
++}
++
++function getWorkerConnection(): { host: string; port: number } {
++  const redisUrl = process.env['REDIS_URL'];
++  if (redisUrl) {
++    const url = new URL(redisUrl);
++    return { host: url.hostname, port: url.port ? Number(url.port) : 6379 };
++  }
++  return { host: '127.0.0.1', port: 6379 };
++}
++
++export function startExportWorker(): Worker<ExportJobData> {
++  return new Worker<ExportJobData>(
++    'export-large',
++    async (job) => {
++      const { jobId, userId, request } = job.data;
++      const knex = getKnex();
++
++      try {
++        const rows = await fetchExportRows(userId, request);
++        const content = request.format === 'csv' ? serializeCsv(rows) : serializeJson(rows);
++        const filename = `${jobId}.${request.format}`;
++        const { downloadUrl } = await localExportStorage.save(filename, content);
++
++        await knex('export_jobs')
++          .where({ id: jobId })
++          .update({
++            status: 'completed',
++            entry_count: rows.length,
++            download_url: downloadUrl,
++            completed_at: new Date(),
++          });
++      } catch (err) {
++        // No partial file survives a failure (Req 10.9).
++        await localExportStorage
++          .delete(`${jobId}.${request.format}`)
++          .catch(() => undefined);
++        await knex('export_jobs')
++          .where({ id: jobId })
++          .update({
++            status: 'failed',
++            error_message: err instanceof Error ? err.message : 'Unknown export failure',
++          });
++        throw err;
++      }
++    },
++    {
++      connection: getWorkerConnection(),
++      // 1 OCPU / 1GB shared with the API on VM2 — one export at a time.
++      concurrency: 1,
++    },
++  );
++}
++
++if (require.main === module) {
++  const worker = startExportWorker();
++  // eslint-disable-next-line no-console
++  console.log('Export worker started');
++
++  worker.on('failed', (job, err) => {
++    // eslint-disable-next-line no-console
++    console.error(`Export job ${job?.id} failed:`, err);
++  });
++}

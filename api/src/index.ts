@@ -4,6 +4,7 @@ import authRouter from './routes/auth.router';
 import trackerRouter from './routes/tracker.router';
 import goalRouter from './routes/goal.router';
 import insightRouter from './routes/insight.router';
+import exportRouter from './routes/export.router';
 
 const app = express();
 
@@ -17,5 +18,6 @@ app.use('/auth', authRouter);
 app.use('/trackers', trackerRouter);
 app.use('/goals', goalRouter);
 app.use('/insights', insightRouter);
+app.use('/exports', exportRouter);
 
 export default app;
