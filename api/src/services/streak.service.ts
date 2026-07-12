@@ -74,15 +74,29 @@ let missedDayQueue: Queue | null = null;
  * `ioredis` dependency and the two class instances are not
  * TypeScript-assignable to one another.
  */
-function getQueueConnection(): { host: string; port: number } {
+function getQueueConnection(): {
+  host: string;
+  port: number;
+  maxRetriesPerRequest: number;
+  retryStrategy: () => null;
+  connectTimeout: number;
+} {
   const redisUrl = process.env['REDIS_URL'];
-  if (redisUrl) {
-    const parsed = new URL(redisUrl);
-    return { host: parsed.hostname, port: Number(parsed.port || 6379) };
-  }
+  const base = redisUrl
+    ? (() => {
+        const parsed = new URL(redisUrl);
+        return { host: parsed.hostname, port: Number(parsed.port || 6379) };
+      })()
+    : {
+        host: process.env['REDIS_HOST'] ?? 'localhost',
+        port: Number(process.env['REDIS_PORT'] ?? 6379),
+      };
+
   return {
-    host: process.env['REDIS_HOST'] ?? 'localhost',
-    port: Number(process.env['REDIS_PORT'] ?? 6379),
+    ...base,
+    maxRetriesPerRequest: 1,
+    retryStrategy: () => null,
+    connectTimeout: 2000,
   };
 }
 

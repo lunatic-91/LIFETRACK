@@ -1,0 +1,701 @@
+diff --git a/api/src/__tests__/properties/insight.property.test.ts b/api/src/__tests__/properties/insight.property.test.ts
+new file mode 100644
+index 0000000..6e602c6
+--- /dev/null
++++ b/api/src/__tests__/properties/insight.property.test.ts
+@@ -0,0 +1,152 @@
++/**
++ * Property-based tests for insight.service — trend classification and
++ * correlation threshold. calculateTrend / pearsonCorrelation are pure
++ * functions, so these properties are checked directly, no DB mocking.
++ */
++
++import * as fc from 'fast-check';
++
++import { calculateTrend, pearsonCorrelation, classifyTrend } from '../../services/insight.service';
++
++// ---------------------------------------------------------------------------
++// Property 15: Trend insight classification matches regression slope
++// Validates: Requirements 9.1, 9.5
++// ---------------------------------------------------------------------------
++
++describe('Property 15: Trend insight classification matches regression slope', () => {
++  // Feature: lifetrack-app, Property 15: Trend insight classification matches regression slope
++
++  test('a strictly increasing sequence (slope > 0.05) classifies as improving', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        fc.float({ min: Math.fround(0.06), max: 10, noNaN: true }),
++        fc.integer({ min: 14, max: 40 }),
++        async (stepSize, length) => {
++          const values = Array.from({ length }, (_, i) => i * stepSize);
++          const result = calculateTrend(values);
++          expect(result).not.toBeNull();
++          expect(result!.direction).toBe('improving');
++          expect(result!.slope).toBeGreaterThan(0.05);
++        },
++      ),
++    );
++  });
++
++  test('a strictly decreasing sequence (slope < -0.05) classifies as declining', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        fc.float({ min: Math.fround(0.06), max: 10, noNaN: true }),
++        fc.integer({ min: 14, max: 40 }),
++        async (stepSize, length) => {
++          const values = Array.from({ length }, (_, i) => -i * stepSize);
++          const result = calculateTrend(values);
++          expect(result).not.toBeNull();
++          expect(result!.direction).toBe('declining');
++          expect(result!.slope).toBeLessThan(-0.05);
++        },
++      ),
++    );
++  });
++
++  test('a constant sequence (slope = 0) classifies as stable', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        fc.float({ min: -1000, max: 1000, noNaN: true }),
++        fc.integer({ min: 14, max: 40 }),
++        async (constant, length) => {
++          const values = Array.from({ length }, () => constant);
++          const result = calculateTrend(values);
++          expect(result).not.toBeNull();
++          expect(result!.direction).toBe('stable');
++          expect(result!.slope).toBe(0);
++        },
++      ),
++    );
++  });
++
++  test('classifyTrend respects the exact ±0.05 boundary', () => {
++    expect(classifyTrend(0.05)).toBe('stable');
++    expect(classifyTrend(-0.05)).toBe('stable');
++    expect(classifyTrend(0.0500001)).toBe('improving');
++    expect(classifyTrend(-0.0500001)).toBe('declining');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Property 17: Insufficient data suppresses trend insight
++// Validates: Requirements 9.6
++// ---------------------------------------------------------------------------
++
++describe('Property 17: Insufficient data suppresses trend insight', () => {
++  // Feature: lifetrack-app, Property 17: Insufficient data suppresses trend insight
++
++  test('for any tracker with fewer than 14 entries, no trend insight is generated', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        fc.array(fc.float({ min: -1000, max: 1000, noNaN: true }), { minLength: 0, maxLength: 13 }),
++        async (values) => {
++          expect(calculateTrend(values)).toBeNull();
++        },
++      ),
++    );
++  });
++
++  test('exactly 14 entries is sufficient to produce a trend insight', () => {
++    const values = Array.from({ length: 14 }, (_, i) => i);
++    expect(calculateTrend(values)).not.toBeNull();
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Property 16: Correlation insight surfaced at or above threshold
++// Validates: Requirements 9.4
++// ---------------------------------------------------------------------------
++
++describe('Property 16: Correlation insight surfaced at or above threshold', () => {
++  // Feature: lifetrack-app, Property 16: Correlation insight surfaced at or above threshold
++
++  test('perfectly correlated series (r = 1) is surfaced', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        fc.array(fc.float({ min: 0, max: 1000, noNaN: true }), { minLength: 30, maxLength: 60 }),
++        fc.float({ min: Math.fround(0.01), max: 10, noNaN: true }),
++        async (xs, scale) => {
++          // Guard against a degenerate all-equal series (undefined correlation).
++          fc.pre(new Set(xs).size > 1);
++          const ys = xs.map((x) => x * scale);
++          const r = pearsonCorrelation(xs, ys);
++          expect(Math.abs(r)).toBeGreaterThanOrEqual(0.5);
++        },
++      ),
++    );
++  });
++
++  test('perfectly inversely correlated series (r = -1) is surfaced', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        fc.array(fc.float({ min: 0, max: 1000, noNaN: true }), { minLength: 30, maxLength: 60 }),
++        async (xs) => {
++          fc.pre(new Set(xs).size > 1);
++          const ys = xs.map((x) => -x);
++          const r = pearsonCorrelation(xs, ys);
++          expect(r).toBeCloseTo(-1, 5);
++          expect(Math.abs(r)).toBeGreaterThanOrEqual(0.5);
++        },
++      ),
++    );
++  });
++
++  test('pearsonCorrelation always returns a value within [-1, 1]', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        fc.array(fc.float({ min: -1000, max: 1000, noNaN: true }), { minLength: 30, maxLength: 60 }),
++        fc.array(fc.float({ min: -1000, max: 1000, noNaN: true }), { minLength: 30, maxLength: 60 }),
++        async (xs, ys) => {
++          const r = pearsonCorrelation(xs, ys);
++          expect(r).toBeGreaterThanOrEqual(-1.0000001);
++          expect(r).toBeLessThanOrEqual(1.0000001);
++        },
++      ),
++    );
++  });
++});
+diff --git a/api/src/index.ts b/api/src/index.ts
+index 4bd39d2..4c9f728 100644
+--- a/api/src/index.ts
++++ b/api/src/index.ts
+@@ -3,6 +3,7 @@ import express from 'express';
+ import authRouter from './routes/auth.router';
+ import trackerRouter from './routes/tracker.router';
+ import goalRouter from './routes/goal.router';
++import insightRouter from './routes/insight.router';
+ 
+ const app = express();
+ 
+@@ -15,5 +16,6 @@ app.get('/health', (_req, res) => {
+ app.use('/auth', authRouter);
+ app.use('/trackers', trackerRouter);
+ app.use('/goals', goalRouter);
++app.use('/insights', insightRouter);
+ 
+ export default app;
+diff --git a/api/src/routes/insight.router.ts b/api/src/routes/insight.router.ts
+new file mode 100644
+index 0000000..e514929
+--- /dev/null
++++ b/api/src/routes/insight.router.ts
+@@ -0,0 +1,23 @@
++/**
++ * Insight route
++ * Requirements: 9.3
++ */
++
++import { Router } from 'express';
++import type { Request, Response } from 'express';
++
++import { requireAuth } from '../middleware/auth.middleware';
++import { listInsights } from '../services/insight.service';
++
++const router = Router();
++
++router.use(requireAuth);
++
++// GET /insights
++router.get('/', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const insights = await listInsights(userId);
++  res.status(200).json(insights);
++});
++
++export default router;
+diff --git a/api/src/services/entry.service.ts b/api/src/services/entry.service.ts
+index eb665e3..41cc176 100644
+--- a/api/src/services/entry.service.ts
++++ b/api/src/services/entry.service.ts
+@@ -1,6 +1,7 @@
+ import { getKnex } from '../db/client';
+ import { recalculateStreak } from './streak.service';
+ import { updateGoalProgress } from './goal.service';
++import { enqueueInsightRecalc } from './insight.service';
+ import type { Entry, ValidationError, ConflictError, NotFoundError, ValidRange } from '../types';
+ 
+ // ---------------------------------------------------------------------------
+@@ -112,6 +113,12 @@ async function runPostSaveHooks(userId: string, trackerId: string): Promise<void
+       // eslint-disable-next-line no-console
+       console.error(`Goal progress update failed for tracker ${trackerId}:`, err);
+     }),
++    // Insight recalculation has a 24h SLA (Req 9.2) — just enqueue the job
++    // here and let the InsightWorker process it off the request path.
++    enqueueInsightRecalc(userId, trackerId).catch((err: unknown) => {
++      // eslint-disable-next-line no-console
++      console.error(`Insight recalc enqueue failed for tracker ${trackerId}:`, err);
++    }),
+   ]);
+ }
+ 
+diff --git a/api/src/services/goal.service.ts b/api/src/services/goal.service.ts
+index b50da19..4f91992 100644
+--- a/api/src/services/goal.service.ts
++++ b/api/src/services/goal.service.ts
+@@ -20,13 +20,27 @@ export const GOAL_COMPLETION_NOTIFICATION_MAX_DELAY_MS = 5 * 60 * 1000;
+ 
+ let notificationQueue: Queue | null = null;
+ 
+-function getQueueConnection(): { host: string; port: number } {
++function getQueueConnection(): {
++  host: string;
++  port: number;
++  maxRetriesPerRequest: number;
++  retryStrategy: () => null;
++  connectTimeout: number;
++} {
+   const redisUrl = process.env['REDIS_URL'];
+-  if (redisUrl) {
+-    const url = new URL(redisUrl);
+-    return { host: url.hostname, port: url.port ? Number(url.port) : 6379 };
+-  }
+-  return { host: '127.0.0.1', port: 6379 };
++  const base = redisUrl
++    ? (() => {
++        const url = new URL(redisUrl);
++        return { host: url.hostname, port: url.port ? Number(url.port) : 6379 };
++      })()
++    : { host: '127.0.0.1', port: 6379 };
++
++  return {
++    ...base,
++    maxRetriesPerRequest: 1,
++    retryStrategy: () => null,
++    connectTimeout: 2000,
++  };
+ }
+ 
+ export function getNotificationQueue(): Queue {
+diff --git a/api/src/services/insight.service.ts b/api/src/services/insight.service.ts
+new file mode 100644
+index 0000000..7646edd
+--- /dev/null
++++ b/api/src/services/insight.service.ts
+@@ -0,0 +1,297 @@
++import { Queue } from 'bullmq';
++
++import { getKnex } from '../db/client';
++import type { Insight, TrendDirection } from '../types';
++
++// ---------------------------------------------------------------------------
++// Constants
++// ---------------------------------------------------------------------------
++
++const TREND_WINDOW = 14;
++const IMPROVING_THRESHOLD = 0.05;
++const DECLINING_THRESHOLD = -0.05;
++const CORRELATION_MIN_SHARED_DAYS = 30;
++const CORRELATION_THRESHOLD = 0.5;
++
++export const INSIGHT_QUEUE_NAME = 'insight-recalc';
++/** Insights must be recalculated within 24h of a new Entry (Req 9.2). */
++export const INSIGHT_RECALC_MAX_DELAY_MS = 24 * 60 * 60 * 1000;
++
++// ---------------------------------------------------------------------------
++// Notification/job queue (same plain {host,port} pattern as the other
++// services — BullMQ bundles its own ioredis, kept separate from getRedis()).
++// ---------------------------------------------------------------------------
++
++let insightQueue: Queue | null = null;
++
++function getQueueConnection(): {
++  host: string;
++  port: number;
++  maxRetriesPerRequest: number;
++  retryStrategy: () => null;
++  connectTimeout: number;
++} {
++  const redisUrl = process.env['REDIS_URL'];
++  const base = redisUrl
++    ? (() => {
++        const url = new URL(redisUrl);
++        return { host: url.hostname, port: url.port ? Number(url.port) : 6379 };
++      })()
++    : { host: '127.0.0.1', port: 6379 };
++
++  return {
++    ...base,
++    // Fail fast rather than retrying forever: an unreachable Redis should
++    // reject the calling promise quickly (this is a fire-and-forget queue
++    // add, not something worth blocking a request — or a test suite — on).
++    maxRetriesPerRequest: 1,
++    retryStrategy: () => null,
++    connectTimeout: 2000,
++  };
++}
++
++export function getInsightQueue(): Queue {
++  if (!insightQueue) {
++    insightQueue = new Queue(INSIGHT_QUEUE_NAME, { connection: getQueueConnection() });
++  }
++  return insightQueue;
++}
++
++/**
++ * Enqueues a background recalculation job for a tracker. Fire-and-forget
++ * from the caller's perspective — the 24h SLA (Req 9.2) is a queue-side
++ * concern (job delay / worker throughput), not something the request path
++ * needs to wait on.
++ */
++export async function enqueueInsightRecalc(userId: string, trackerId: string): Promise<void> {
++  const queue = getInsightQueue();
++  await queue.add('recalc', { userId, trackerId }, { attempts: 3 });
++}
++
++// ---------------------------------------------------------------------------
++// Pure math: linear regression slope (Property 15, 17)
++// ---------------------------------------------------------------------------
++
++/**
++ * Ordinary least-squares slope of `values` against their index (0, 1, 2, …).
++ * Returns 0 for fewer than 2 points (no meaningful slope).
++ */
++export function linearRegressionSlope(values: number[]): number {
++  const n = values.length;
++  if (n < 2) return 0;
++
++  const xs = Array.from({ length: n }, (_, i) => i);
++  const meanX = xs.reduce((a, b) => a + b, 0) / n;
++  const meanY = values.reduce((a, b) => a + b, 0) / n;
++
++  let numerator = 0;
++  let denominator = 0;
++  for (let i = 0; i < n; i++) {
++    const dx = xs[i]! - meanX;
++    numerator += dx * (values[i]! - meanY);
++    denominator += dx * dx;
++  }
++
++  return denominator === 0 ? 0 : numerator / denominator;
++}
++
++export function classifyTrend(slope: number): TrendDirection {
++  if (slope > IMPROVING_THRESHOLD) return 'improving';
++  if (slope < DECLINING_THRESHOLD) return 'declining';
++  return 'stable';
++}
++
++export interface TrendComputation {
++  direction: TrendDirection;
++  slope: number;
++}
++
++/**
++ * Computes a trend over the most recent 14 Entries (chronologically
++ * ordered), or returns null when fewer than 14 Entries exist.
++ *
++ * Requirements: 9.1, 9.5, 9.6
++ */
++export function calculateTrend(orderedValues: number[]): TrendComputation | null {
++  if (orderedValues.length < TREND_WINDOW) return null;
++
++  const window = orderedValues.slice(-TREND_WINDOW);
++  const slope = linearRegressionSlope(window);
++  return { direction: classifyTrend(slope), slope };
++}
++
++// ---------------------------------------------------------------------------
++// Pure math: Pearson correlation (Property 16)
++// ---------------------------------------------------------------------------
++
++/**
++ * Pearson correlation coefficient between two equal-length numeric series.
++ * Returns 0 when either series has zero variance (undefined correlation).
++ */
++export function pearsonCorrelation(xs: number[], ys: number[]): number {
++  const n = Math.min(xs.length, ys.length);
++  if (n === 0) return 0;
++
++  const meanX = xs.slice(0, n).reduce((a, b) => a + b, 0) / n;
++  const meanY = ys.slice(0, n).reduce((a, b) => a + b, 0) / n;
++
++  let cov = 0;
++  let varX = 0;
++  let varY = 0;
++  for (let i = 0; i < n; i++) {
++    const dx = xs[i]! - meanX;
++    const dy = ys[i]! - meanY;
++    cov += dx * dy;
++    varX += dx * dx;
++    varY += dy * dy;
++  }
++
++  if (varX === 0 || varY === 0) return 0;
++  return cov / Math.sqrt(varX * varY);
++}
++
++// ---------------------------------------------------------------------------
++// DB orchestration
++// ---------------------------------------------------------------------------
++
++interface EntryValueRow {
++  local_date: string;
++  value_numeric: string | number | null;
++  value_boolean: boolean | null;
++}
++
++function toNumericSeries(rows: EntryValueRow[]): { date: string; value: number }[] {
++  return rows
++    .map((r) => {
++      if (r.value_numeric !== null) return { date: r.local_date, value: Number(r.value_numeric) };
++      if (r.value_boolean !== null) return { date: r.local_date, value: r.value_boolean ? 1 : 0 };
++      return null;
++    })
++    .filter((v): v is { date: string; value: number } => v !== null);
++}
++
++/**
++ * Recalculates and persists Insights for one Tracker: a trend Insight (Req
++ * 9.1, 9.5, 9.6) plus correlation Insights (Req 9.4) against every other
++ * numeric-or-boolean Tracker owned by the same user.
++ *
++ * Requirements: 9.1, 9.2, 9.4, 9.5, 9.6
++ */
++export async function recalculateInsightsForTracker(
++  userId: string,
++  trackerId: string,
++): Promise<void> {
++  const knex = getKnex();
++
++  const ownRows = (await knex('entries')
++    .where({ tracker_id: trackerId, user_id: userId })
++    .orderBy('local_date', 'asc')
++    .select('local_date', 'value_numeric', 'value_boolean')) as EntryValueRow[];
++
++  const ownSeries = toNumericSeries(ownRows);
++
++  // ---- Trend insight ----
++  const trend = calculateTrend(ownSeries.map((e) => e.value));
++  if (trend) {
++    await knex('insights').insert({
++      user_id: userId,
++      type: 'trend',
++      payload: JSON.stringify({
++        trackerId,
++        direction: trend.direction,
++        slope: trend.slope,
++      }),
++    });
++  }
++
++  // ---- Correlation insights against every other numeric tracker ----
++  if (ownSeries.length >= CORRELATION_MIN_SHARED_DAYS) {
++    const otherTrackers = (await knex('trackers')
++      .where({ user_id: userId })
++      .andWhere('id', '!=', trackerId)
++      .whereIn('data_type', ['numeric', 'boolean'])
++      .select('id')) as { id: string }[];
++
++    const ownByDate = new Map(ownSeries.map((e) => [e.date, e.value]));
++
++    for (const other of otherTrackers) {
++      const otherRows = (await knex('entries')
++        .where({ tracker_id: other.id, user_id: userId })
++        .select('local_date', 'value_numeric', 'value_boolean')) as EntryValueRow[];
++
++      const otherByDate = new Map(
++        toNumericSeries(otherRows).map((e) => [e.date, e.value]),
++      );
++
++      const sharedDates = [...ownByDate.keys()].filter((d) => otherByDate.has(d));
++      if (sharedDates.length < CORRELATION_MIN_SHARED_DAYS) continue;
++
++      const xs = sharedDates.map((d) => ownByDate.get(d)!);
++      const ys = sharedDates.map((d) => otherByDate.get(d)!);
++      const r = pearsonCorrelation(xs, ys);
++
++      if (Math.abs(r) >= CORRELATION_THRESHOLD) {
++        await knex('insights').insert({
++          user_id: userId,
++          type: 'correlation',
++          payload: JSON.stringify({
++            trackerIdA: trackerId,
++            trackerIdB: other.id,
++            pearsonR: r,
++          }),
++        });
++      }
++    }
++  }
++}
++
++// ---------------------------------------------------------------------------
++// listInsights
++// ---------------------------------------------------------------------------
++
++interface InsightRow {
++  id: string;
++  user_id: string;
++  type: 'trend' | 'correlation';
++  payload: Record<string, unknown> | string;
++  generated_at: string | Date;
++}
++
++function rowToInsight(row: InsightRow): Insight {
++  const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
++  const generatedAt = new Date(row.generated_at).toISOString();
++
++  if (row.type === 'trend') {
++    return {
++      id: row.id,
++      type: 'trend',
++      userId: row.user_id,
++      trackerId: payload['trackerId'],
++      direction: payload['direction'],
++      slope: payload['slope'],
++      generatedAt,
++    };
++  }
++
++  return {
++    id: row.id,
++    type: 'correlation',
++    userId: row.user_id,
++    trackerIdA: payload['trackerIdA'],
++    trackerIdB: payload['trackerIdB'],
++    pearsonR: payload['pearsonR'],
++    generatedAt,
++  };
++}
++
++/**
++ * Requirements: 9.3
++ */
++export async function listInsights(userId: string): Promise<Insight[]> {
++  const knex = getKnex();
++  const rows = (await knex('insights')
++    .where({ user_id: userId })
++    .orderBy('generated_at', 'desc')) as InsightRow[];
++
++  return rows.map(rowToInsight);
++}
+diff --git a/api/src/services/streak.service.ts b/api/src/services/streak.service.ts
+index 52da7c3..24a02c2 100644
+--- a/api/src/services/streak.service.ts
++++ b/api/src/services/streak.service.ts
+@@ -74,15 +74,29 @@ let missedDayQueue: Queue | null = null;
+  * `ioredis` dependency and the two class instances are not
+  * TypeScript-assignable to one another.
+  */
+-function getQueueConnection(): { host: string; port: number } {
++function getQueueConnection(): {
++  host: string;
++  port: number;
++  maxRetriesPerRequest: number;
++  retryStrategy: () => null;
++  connectTimeout: number;
++} {
+   const redisUrl = process.env['REDIS_URL'];
+-  if (redisUrl) {
+-    const parsed = new URL(redisUrl);
+-    return { host: parsed.hostname, port: Number(parsed.port || 6379) };
+-  }
++  const base = redisUrl
++    ? (() => {
++        const parsed = new URL(redisUrl);
++        return { host: parsed.hostname, port: Number(parsed.port || 6379) };
++      })()
++    : {
++        host: process.env['REDIS_HOST'] ?? 'localhost',
++        port: Number(process.env['REDIS_PORT'] ?? 6379),
++      };
++
+   return {
+-    host: process.env['REDIS_HOST'] ?? 'localhost',
+-    port: Number(process.env['REDIS_PORT'] ?? 6379),
++    ...base,
++    maxRetriesPerRequest: 1,
++    retryStrategy: () => null,
++    connectTimeout: 2000,
+   };
+ }
+ 
+diff --git a/api/src/types/index.ts b/api/src/types/index.ts
+index 4b3a113..497ae8f 100644
+--- a/api/src/types/index.ts
++++ b/api/src/types/index.ts
+@@ -111,3 +111,25 @@ export interface Goal {
+   completedAt: string | null;
+   expiredAt: string | null;
+ }
++
++export interface TrendInsight {
++  id: string;
++  type: 'trend';
++  userId: string;
++  trackerId: string;
++  direction: TrendDirection;
++  slope: number;
++  generatedAt: string;
++}
++
++export interface CorrelationInsight {
++  id: string;
++  type: 'correlation';
++  userId: string;
++  trackerIdA: string;
++  trackerIdB: string;
++  pearsonR: number;
++  generatedAt: string;
++}
++
++export type Insight = TrendInsight | CorrelationInsight;
+diff --git a/api/src/workers/insight.worker.ts b/api/src/workers/insight.worker.ts
+new file mode 100644
+index 0000000..3d81b70
+--- /dev/null
++++ b/api/src/workers/insight.worker.ts
+@@ -0,0 +1,52 @@
++/**
++ * Insight Worker — processes `insight-recalc` jobs enqueued by
++ * enqueueInsightRecalc() (called after each Entry save). Runs as its own
++ * process (`node dist/workers/insight.worker.js`) on VM2, separate from the
++ * HTTP server, so a slow recalculation never blocks API requests.
++ *
++ * Requirements: 9.2
++ */
++
++import { Worker } from 'bullmq';
++
++import { INSIGHT_QUEUE_NAME, recalculateInsightsForTracker } from '../services/insight.service';
++
++interface InsightJobData {
++  userId: string;
++  trackerId: string;
++}
++
++function getWorkerConnection(): { host: string; port: number } {
++  const redisUrl = process.env['REDIS_URL'];
++  if (redisUrl) {
++    const url = new URL(redisUrl);
++    return { host: url.hostname, port: url.port ? Number(url.port) : 6379 };
++  }
++  return { host: '127.0.0.1', port: 6379 };
++}
++
++export function startInsightWorker(): Worker<InsightJobData> {
++  return new Worker<InsightJobData>(
++    INSIGHT_QUEUE_NAME,
++    async (job) => {
++      await recalculateInsightsForTracker(job.data.userId, job.data.trackerId);
++    },
++    {
++      connection: getWorkerConnection(),
++      // Kept at 1 on purpose: VM2 has 1 OCPU / 1GB total, shared with the
++      // Express API — a single concurrent job avoids competing for memory.
++      concurrency: 1,
++    },
++  );
++}
++
++if (require.main === module) {
++  const worker = startInsightWorker();
++  // eslint-disable-next-line no-console
++  console.log('Insight worker started');
++
++  worker.on('failed', (job, err) => {
++    // eslint-disable-next-line no-console
++    console.error(`Insight job ${job?.id} failed:`, err);
++  });
++}

@@ -20,13 +20,27 @@ export const GOAL_COMPLETION_NOTIFICATION_MAX_DELAY_MS = 5 * 60 * 1000;
 
 let notificationQueue: Queue | null = null;
 
-function getQueueConnection(): { host: string; port: number } {
+function getQueueConnection(): {
+  host: string;
+  port: number;
+  maxRetriesPerRequest: number;
+  retryStrategy: () => null;
+  connectTimeout: number;
+} {
   const redisUrl = process.env['REDIS_URL'];
-  if (redisUrl) {
-    const url = new URL(redisUrl);
-    return { host: url.hostname, port: url.port ? Number(url.port) : 6379 };
-  }
-  return { host: '127.0.0.1', port: 6379 };
+  const base = redisUrl
+    ? (() => {
+        const url = new URL(redisUrl);
+        return { host: url.hostname, port: url.port ? Number(url.port) : 6379 };
+      })()
+    : { host: '127.0.0.1', port: 6379 };
+
+  return {
+    ...base,
+    maxRetriesPerRequest: 1,
+    retryStrategy: () => null,
+    connectTimeout: 2000,
+  };
 }
 
 export function getNotificationQueue(): Queue {

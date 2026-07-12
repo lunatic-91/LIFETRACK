@@ -1,6 +1,7 @@
 import { getKnex } from '../db/client';
 import { recalculateStreak } from './streak.service';
 import { updateGoalProgress } from './goal.service';
+import { enqueueInsightRecalc } from './insight.service';
 import type { Entry, ValidationError, ConflictError, NotFoundError, ValidRange } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -111,6 +112,12 @@ async function runPostSaveHooks(userId: string, trackerId: string): Promise<void
     updateGoalProgress(trackerId).catch((err: unknown) => {
       // eslint-disable-next-line no-console
       console.error(`Goal progress update failed for tracker ${trackerId}:`, err);
+    }),
+    // Insight recalculation has a 24h SLA (Req 9.2) — just enqueue the job
+    // here and let the InsightWorker process it off the request path.
+    enqueueInsightRecalc(userId, trackerId).catch((err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error(`Insight recalc enqueue failed for tracker ${trackerId}:`, err);
     }),
   ]);
 }

@@ -111,3 +111,25 @@ export interface Goal {
   completedAt: string | null;
   expiredAt: string | null;
 }
+
+export interface TrendInsight {
+  id: string;
+  type: 'trend';
+  userId: string;
+  trackerId: string;
+  direction: TrendDirection;
+  slope: number;
+  generatedAt: string;
+}
+
+export interface CorrelationInsight {
+  id: string;
+  type: 'correlation';
+  userId: string;
+  trackerIdA: string;
+  trackerIdB: string;
+  pearsonR: number;
+  generatedAt: string;
+}
+
+export type Insight = TrendInsight | CorrelationInsight;
