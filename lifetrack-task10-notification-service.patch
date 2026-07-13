@@ -1,0 +1,859 @@
+diff --git a/api/src/__tests__/properties/notification.property.test.ts b/api/src/__tests__/properties/notification.property.test.ts
+new file mode 100644
+index 0000000..05eeace
+--- /dev/null
++++ b/api/src/__tests__/properties/notification.property.test.ts
+@@ -0,0 +1,195 @@
++/**
++ * Property-based tests for notification.service — reminder suppression.
++ * Feature: lifetrack-app
++ *
++ * UNIT test. getKnex() is mocked with an in-memory fake covering the
++ * reminders/users/entries/trackers tables `processReminderFire` reads.
++ */
++
++import * as fc from 'fast-check';
++
++// ---------------------------------------------------------------------------
++// In-memory fake Postgres
++// ---------------------------------------------------------------------------
++
++interface FakeReminderRow {
++  id: string;
++  user_id: string;
++  tracker_id: string;
++  time_of_day: string;
++  days_of_week: number[];
++  enabled: boolean;
++}
++
++interface FakeUserRow {
++  id: string;
++  notifications_enabled: boolean;
++}
++
++interface FakeEntryRow {
++  id: string;
++  tracker_id: string;
++  local_date: string;
++}
++
++interface FakeTrackerRow {
++  id: string;
++  name: string;
++}
++
++type FakeTable = 'reminders' | 'users' | 'entries' | 'trackers';
++
++function matches(row: Record<string, unknown>, clause: Record<string, unknown>): boolean {
++  return Object.entries(clause).every(([k, v]) => row[k] === v);
++}
++
++function makeFakeKnex(
++  reminders: FakeReminderRow[],
++  users: FakeUserRow[],
++  entries: FakeEntryRow[],
++  trackers: FakeTrackerRow[],
++) {
++  const tables: Record<FakeTable, Record<string, unknown>[]> = {
++    reminders: reminders as unknown as Record<string, unknown>[],
++    users: users as unknown as Record<string, unknown>[],
++    entries: entries as unknown as Record<string, unknown>[],
++    trackers: trackers as unknown as Record<string, unknown>[],
++  };
++
++  return (table: FakeTable) => {
++    const state: { whereClause: Record<string, unknown> } = { whereClause: {} };
++    const source = tables[table];
++
++    const builder = {
++      where(clause: Record<string, unknown>) {
++        state.whereClause = { ...state.whereClause, ...clause };
++        return builder;
++      },
++      select() {
++        return builder;
++      },
++      async first() {
++        return source.find((row) => matches(row, state.whereClause));
++      },
++    };
++    return builder;
++  };
++}
++
++const mockKnexFn = jest.fn();
++
++jest.mock('../../db/client', () => ({ getKnex: () => mockKnexFn() }));
++
++import { processReminderFire } from '../../services/notification.service';
++import type { ReminderFireJob } from '../../services/notification.service';
++
++beforeEach(() => {
++  mockKnexFn.mockReset();
++});
++
++let consoleLogSpy: jest.SpiedFunction<typeof console.log>;
++
++beforeAll(() => {
++  consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
++});
++
++afterAll(() => {
++  consoleLogSpy.mockRestore();
++});
++
++const TODAY = '2026-07-12';
++const USER_ID = 'user-1';
++const TRACKER_ID = 'tracker-1';
++const REMINDER_ID = 'reminder-1';
++
++function setup(overrides: {
++  reminderEnabled?: boolean;
++  notificationsEnabled?: boolean;
++  hasEntryToday?: boolean;
++}): void {
++  const { reminderEnabled = true, notificationsEnabled = true, hasEntryToday = false } = overrides;
++
++  const reminders: FakeReminderRow[] = [
++    {
++      id: REMINDER_ID,
++      user_id: USER_ID,
++      tracker_id: TRACKER_ID,
++      time_of_day: '09:00:00',
++      days_of_week: [0, 1, 2, 3, 4, 5, 6],
++      enabled: reminderEnabled,
++    },
++  ];
++  const users: FakeUserRow[] = [{ id: USER_ID, notifications_enabled: notificationsEnabled }];
++  const trackers: FakeTrackerRow[] = [{ id: TRACKER_ID, name: 'Mood' }];
++  const entries: FakeEntryRow[] = hasEntryToday
++    ? [{ id: 'entry-1', tracker_id: TRACKER_ID, local_date: TODAY }]
++    : [];
++
++  mockKnexFn.mockReturnValue(makeFakeKnex(reminders, users, entries, trackers));
++}
++
++// ---------------------------------------------------------------------------
++// Property 14: Reminder suppression when today's entry exists
++// Validates: Requirements 8.3
++// ---------------------------------------------------------------------------
++
++describe("Property 14: Reminder suppression when today's entry exists", () => {
++  // Feature: lifetrack-app, Property 14: Reminder suppression when today's entry exists
++
++  test('a reminder is suppressed iff an entry already exists for that tracker today', async () => {
++    await fc.assert(
++      fc.asyncProperty(fc.boolean(), async (hasEntryToday) => {
++        setup({ hasEntryToday });
++
++        const job: ReminderFireJob = {
++          type: 'reminder-fire',
++          reminderId: REMINDER_ID,
++          userId: USER_ID,
++          trackerId: TRACKER_ID,
++        };
++
++        const result = await processReminderFire(job, TODAY);
++
++        expect(result.delivered).toBe(!hasEntryToday);
++      }),
++    );
++  });
++
++  test('a disabled reminder is never delivered, regardless of entry state', async () => {
++    await fc.assert(
++      fc.asyncProperty(fc.boolean(), async (hasEntryToday) => {
++        setup({ reminderEnabled: false, hasEntryToday });
++
++        const job: ReminderFireJob = {
++          type: 'reminder-fire',
++          reminderId: REMINDER_ID,
++          userId: USER_ID,
++          trackerId: TRACKER_ID,
++        };
++
++        const result = await processReminderFire(job, TODAY);
++
++        expect(result.delivered).toBe(false);
++      }),
++    );
++  });
++
++  test('reminders are suppressed when the user has disabled notifications globally (Req 8.4)', async () => {
++    await fc.assert(
++      fc.asyncProperty(fc.boolean(), async (hasEntryToday) => {
++        setup({ notificationsEnabled: false, hasEntryToday });
++
++        const job: ReminderFireJob = {
++          type: 'reminder-fire',
++          reminderId: REMINDER_ID,
++          userId: USER_ID,
++          trackerId: TRACKER_ID,
++        };
++
++        const result = await processReminderFire(job, TODAY);
++
++        expect(result.delivered).toBe(false);
++      }),
++    );
++  });
++});
+diff --git a/api/src/db/migrations/20240103000000_notification_prefs.ts b/api/src/db/migrations/20240103000000_notification_prefs.ts
+new file mode 100644
+index 0000000..a021637
+--- /dev/null
++++ b/api/src/db/migrations/20240103000000_notification_prefs.ts
+@@ -0,0 +1,22 @@
++import type { Knex } from 'knex';
++
++/**
++ * Adds the per-user global notification toggle (Req 8.4: "enable or disable
++ * Reminders globally ... without deleting the Reminder configuration").
++ * Kept as its own migration rather than folded into the initial schema
++ * since the `reminders` table already shipped in task 10's predecessor
++ * migrations without it.
++ */
++export async function up(knex: Knex): Promise<void> {
++  await knex.schema.raw(`
++    ALTER TABLE users
++      ADD COLUMN notifications_enabled BOOLEAN NOT NULL DEFAULT true;
++  `);
++}
++
++export async function down(knex: Knex): Promise<void> {
++  await knex.schema.raw(`
++    ALTER TABLE users
++      DROP COLUMN IF EXISTS notifications_enabled;
++  `);
++}
+diff --git a/api/src/index.ts b/api/src/index.ts
+index 7840442..cd85e94 100644
+--- a/api/src/index.ts
++++ b/api/src/index.ts
+@@ -5,6 +5,7 @@ import trackerRouter from './routes/tracker.router';
+ import goalRouter from './routes/goal.router';
+ import insightRouter from './routes/insight.router';
+ import exportRouter from './routes/export.router';
++import reminderRouter from './routes/reminder.router';
+ 
+ const app = express();
+ 
+@@ -19,5 +20,6 @@ app.use('/trackers', trackerRouter);
+ app.use('/goals', goalRouter);
+ app.use('/insights', insightRouter);
+ app.use('/exports', exportRouter);
++app.use('/reminders', reminderRouter);
+ 
+ export default app;
+diff --git a/api/src/routes/reminder.router.ts b/api/src/routes/reminder.router.ts
+new file mode 100644
+index 0000000..1ea9e81
+--- /dev/null
++++ b/api/src/routes/reminder.router.ts
+@@ -0,0 +1,78 @@
++/**
++ * Reminder routes
++ * Requirements: 8.1-8.5
++ */
++
++import { Router } from 'express';
++import type { Request, Response } from 'express';
++
++import { requireAuth } from '../middleware/auth.middleware';
++import {
++  createReminder,
++  listReminders,
++  updateReminder,
++  deleteReminder,
++  setGlobalEnabled,
++} from '../services/notification.service';
++
++const router = Router();
++
++router.use(requireAuth);
++
++// PATCH /reminders/global — registered before /:id so 'global' is never
++// swallowed as a Reminder id.
++router.patch('/global', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const enabled = Boolean((req.body as { enabled?: unknown }).enabled);
++  const result = await setGlobalEnabled(userId, enabled);
++  res.status(200).json(result);
++});
++
++// POST /reminders
++router.post('/', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const result = await createReminder(userId, req.body);
++
++  if ('error' in result) {
++    res.status(400).json(result);
++    return;
++  }
++
++  res.status(201).json(result);
++});
++
++// GET /reminders
++router.get('/', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const reminders = await listReminders(userId);
++  res.status(200).json(reminders);
++});
++
++// PATCH /reminders/:id
++router.patch('/:id', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const result = await updateReminder(userId, req.params['id']!, req.body);
++
++  if ('error' in result) {
++    const status = result.error === 'NOT_FOUND' ? 404 : 400;
++    res.status(status).json(result);
++    return;
++  }
++
++  res.status(200).json(result);
++});
++
++// DELETE /reminders/:id
++router.delete('/:id', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const result = await deleteReminder(userId, req.params['id']!);
++
++  if (result !== true) {
++    res.status(404).json(result);
++    return;
++  }
++
++  res.status(204).send();
++});
++
++export default router;
+diff --git a/api/src/services/notification.service.ts b/api/src/services/notification.service.ts
+new file mode 100644
+index 0000000..575d27c
+--- /dev/null
++++ b/api/src/services/notification.service.ts
+@@ -0,0 +1,392 @@
++/**
++ * Notification Service — Reminder CRUD, global/per-Reminder enable toggle,
++ * BullMQ scheduling for recurring Reminder fires, and the
++ * suppression-aware delivery rule consumed by NotifWorker.
++ * Feature: lifetrack-app
++ *
++ * Requirements: 8.1, 8.2, 8.3, 8.4, 8.5
++ */
++
++import { Queue } from 'bullmq';
++
++import { getKnex } from '../db/client';
++import type { Reminder, ValidationError, NotFoundError } from '../types';
++
++// ---------------------------------------------------------------------------
++// Constants
++// ---------------------------------------------------------------------------
++
++export const NOTIFICATION_QUEUE_NAME = 'notifications';
++
++/** Reminders must reach an online device within 60s of firing/reconnect (Req 8.2, 8.5). */
++export const REMINDER_DELIVERY_MAX_DELAY_MS = 60 * 1000;
++
++const VALID_DAYS_OF_WEEK = [0, 1, 2, 3, 4, 5, 6];
++const TIME_OF_DAY_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
++
++// ---------------------------------------------------------------------------
++// Notification queue (mirrors the pattern used in streak.service.ts /
++// goal.service.ts: a plain {host, port} object rather than a shared
++// ioredis instance, since BullMQ bundles its own nested ioredis dependency;
++// fast-fail retry settings so a missing Redis never hangs a request).
++// ---------------------------------------------------------------------------
++
++let notificationQueue: Queue | null = null;
++
++function getQueueConnection(): {
++  host: string;
++  port: number;
++  maxRetriesPerRequest: number;
++  retryStrategy: () => null;
++  connectTimeout: number;
++} {
++  const redisUrl = process.env['REDIS_URL'];
++  const base = redisUrl
++    ? (() => {
++        const url = new URL(redisUrl);
++        return { host: url.hostname, port: url.port ? Number(url.port) : 6379 };
++      })()
++    : { host: '127.0.0.1', port: 6379 };
++
++  return {
++    ...base,
++    maxRetriesPerRequest: 1,
++    retryStrategy: () => null,
++    connectTimeout: 2000,
++  };
++}
++
++export function getNotificationQueue(): Queue {
++  if (!notificationQueue) {
++    notificationQueue = new Queue(NOTIFICATION_QUEUE_NAME, { connection: getQueueConnection() });
++  }
++  return notificationQueue;
++}
++
++// ---------------------------------------------------------------------------
++// Types
++// ---------------------------------------------------------------------------
++
++export interface CreateReminderRequest {
++  trackerId: string;
++  timeOfDay: string; // HH:MM
++  daysOfWeek: number[]; // 0=Sun … 6=Sat
++}
++
++export interface UpdateReminderRequest {
++  timeOfDay?: string;
++  daysOfWeek?: number[];
++  enabled?: boolean;
++}
++
++export interface ReminderFireJob {
++  type: 'reminder-fire';
++  reminderId: string;
++  userId: string;
++  trackerId: string;
++}
++
++export interface PushNotificationPayload {
++  userId: string;
++  title: string;
++  body: string;
++}
++
++interface ReminderRow {
++  id: string;
++  user_id: string;
++  tracker_id: string;
++  time_of_day: string;
++  days_of_week: number[];
++  enabled: boolean;
++}
++
++// ---------------------------------------------------------------------------
++// Row <-> domain mapping
++// ---------------------------------------------------------------------------
++
++function rowToReminder(row: ReminderRow): Reminder {
++  return {
++    id: row.id,
++    userId: row.user_id,
++    trackerId: row.tracker_id,
++    timeOfDay: row.time_of_day.slice(0, 5),
++    daysOfWeek: row.days_of_week,
++    enabled: row.enabled,
++  };
++}
++
++// ---------------------------------------------------------------------------
++// Validation (Req 8.1)
++// ---------------------------------------------------------------------------
++
++function validateReminderInput(timeOfDay: string, daysOfWeek: number[]): Record<string, string> {
++  const fields: Record<string, string> = {};
++
++  if (!TIME_OF_DAY_PATTERN.test(timeOfDay)) {
++    fields['timeOfDay'] = 'Time of day must be in HH:MM 24-hour format';
++  }
++
++  const isValidDaySet =
++    daysOfWeek.length > 0 &&
++    daysOfWeek.every((d) => VALID_DAYS_OF_WEEK.includes(d)) &&
++    new Set(daysOfWeek).size === daysOfWeek.length;
++
++  if (!isValidDaySet) {
++    fields['daysOfWeek'] = 'Days of week must be unique integers between 0 (Sun) and 6 (Sat)';
++  }
++
++  return fields;
++}
++
++// ---------------------------------------------------------------------------
++// BullMQ job-scheduler sync — one recurring scheduler per configured day
++// (Req 8.1, 8.2). Config changes (Req 8.4) simply unschedule + reschedule;
++// `enabled`/global toggles are re-checked at fire time in
++// `processReminderFire` rather than by adding/removing schedulers, so
++// disabling never loses the underlying Reminder configuration.
++// ---------------------------------------------------------------------------
++
++function jobSchedulerId(reminderId: string, dayOfWeek: number): string {
++  return `reminder:${reminderId}:day:${dayOfWeek}`;
++}
++
++function cronPatternFor(timeOfDay: string, dayOfWeek: number): string {
++  const [hour, minute] = timeOfDay.split(':');
++  return `${minute} ${hour} * * ${dayOfWeek}`;
++}
++
++async function scheduleReminderJobs(reminder: ReminderRow): Promise<void> {
++  const queue = getNotificationQueue();
++  const job: ReminderFireJob = {
++    type: 'reminder-fire',
++    reminderId: reminder.id,
++    userId: reminder.user_id,
++    trackerId: reminder.tracker_id,
++  };
++
++  await Promise.all(
++    reminder.days_of_week.map((day) =>
++      queue.upsertJobScheduler(
++        jobSchedulerId(reminder.id, day),
++        { pattern: cronPatternFor(reminder.time_of_day, day) },
++        { name: 'reminder-fire', data: job },
++      ),
++    ),
++  );
++}
++
++async function unscheduleReminderJobs(reminderId: string, daysOfWeek: number[]): Promise<void> {
++  const queue = getNotificationQueue();
++  await Promise.all(
++    daysOfWeek.map((day) => queue.removeJobScheduler(jobSchedulerId(reminderId, day))),
++  );
++}
++
++// ---------------------------------------------------------------------------
++// createReminder / listReminders / updateReminder / deleteReminder
++// ---------------------------------------------------------------------------
++
++/** Requirements: 8.1 */
++export async function createReminder(
++  userId: string,
++  req: CreateReminderRequest,
++): Promise<Reminder | ValidationError> {
++  const fields = validateReminderInput(req.timeOfDay, req.daysOfWeek);
++  if (!req.trackerId) {
++    fields['trackerId'] = 'A linked tracker is required';
++  }
++
++  if (Object.keys(fields).length > 0) {
++    return {
++      error: 'VALIDATION_ERROR',
++      message: 'Invalid reminder request',
++      fields,
++    } satisfies ValidationError;
++  }
++
++  const knex = getKnex();
++
++  const [inserted] = (await knex('reminders')
++    .insert({
++      user_id: userId,
++      tracker_id: req.trackerId,
++      time_of_day: req.timeOfDay,
++      days_of_week: req.daysOfWeek,
++      enabled: true,
++    })
++    .returning('*')) as ReminderRow[];
++
++  await scheduleReminderJobs(inserted!);
++
++  return rowToReminder(inserted!);
++}
++
++/** Requirements: 8.1, 8.4 */
++export async function listReminders(userId: string): Promise<Reminder[]> {
++  const knex = getKnex();
++  const rows = (await knex('reminders')
++    .where({ user_id: userId })
++    .orderBy('time_of_day', 'asc')) as ReminderRow[];
++
++  return rows.map(rowToReminder);
++}
++
++/** Requirements: 8.1, 8.4 */
++export async function updateReminder(
++  userId: string,
++  reminderId: string,
++  updates: UpdateReminderRequest,
++): Promise<Reminder | ValidationError | NotFoundError> {
++  const knex = getKnex();
++
++  const existing = (await knex('reminders').where({ id: reminderId, user_id: userId }).first()) as
++    | ReminderRow
++    | undefined;
++
++  if (!existing) {
++    return { error: 'NOT_FOUND', message: 'Reminder not found' } satisfies NotFoundError;
++  }
++
++  const scheduleChanged = updates.timeOfDay !== undefined || updates.daysOfWeek !== undefined;
++
++  if (scheduleChanged) {
++    const nextTimeOfDay = updates.timeOfDay ?? existing.time_of_day.slice(0, 5);
++    const nextDaysOfWeek = updates.daysOfWeek ?? existing.days_of_week;
++    const fields = validateReminderInput(nextTimeOfDay, nextDaysOfWeek);
++    if (Object.keys(fields).length > 0) {
++      return {
++        error: 'VALIDATION_ERROR',
++        message: 'Invalid reminder update',
++        fields,
++      } satisfies ValidationError;
++    }
++  }
++
++  const patch: Record<string, unknown> = {};
++  if (updates.timeOfDay !== undefined) patch['time_of_day'] = updates.timeOfDay;
++  if (updates.daysOfWeek !== undefined) patch['days_of_week'] = updates.daysOfWeek;
++  if (updates.enabled !== undefined) patch['enabled'] = updates.enabled;
++
++  const [updated] = (await knex('reminders')
++    .where({ id: reminderId, user_id: userId })
++    .update(patch)
++    .returning('*')) as ReminderRow[];
++
++  if (scheduleChanged) {
++    // Re-sync BullMQ job schedulers to the new time/days (Req 8.4).
++    await unscheduleReminderJobs(existing.id, existing.days_of_week);
++    await scheduleReminderJobs(updated!);
++  }
++
++  return rowToReminder(updated!);
++}
++
++/** Requirements: 8.1, 8.4 */
++export async function deleteReminder(
++  userId: string,
++  reminderId: string,
++): Promise<true | NotFoundError> {
++  const knex = getKnex();
++
++  const existing = (await knex('reminders').where({ id: reminderId, user_id: userId }).first()) as
++    | ReminderRow
++    | undefined;
++
++  if (!existing) {
++    return { error: 'NOT_FOUND', message: 'Reminder not found' } satisfies NotFoundError;
++  }
++
++  await knex('reminders').where({ id: reminderId, user_id: userId }).delete();
++  await unscheduleReminderJobs(existing.id, existing.days_of_week);
++
++  return true;
++}
++
++/**
++ * Enables/disables Reminder delivery for a User across every Tracker,
++ * without touching any individual Reminder's own `enabled` flag or
++ * schedule (Req 8.4). Enforced at delivery time in `processReminderFire`.
++ */
++export async function setGlobalEnabled(
++  userId: string,
++  enabled: boolean,
++): Promise<{ enabled: boolean }> {
++  const knex = getKnex();
++  await knex('users').where({ id: userId }).update({ notifications_enabled: enabled });
++  return { enabled };
++}
++
++// ---------------------------------------------------------------------------
++// Delivery (consumed by NotifWorker)
++// ---------------------------------------------------------------------------
++
++/**
++ * Best-effort push delivery. There is no device/session/FCM-APNs
++ * integration yet in this codebase (see design.md Notification_Service) —
++ * this is the single seam a future push-provider integration plugs into.
++ * Logging is intentional so delivery is observable in the interim.
++ */
++// eslint-disable-next-line @typescript-eslint/require-await -- async signature is intentional: this is the seam a real push-provider call will await.
++export async function deliverPushNotification(payload: PushNotificationPayload): Promise<void> {
++  // eslint-disable-next-line no-console
++  console.log(`[push] -> user ${payload.userId}: ${payload.title} — ${payload.body}`);
++}
++
++/**
++ * Core suppression + delivery rule for a fired Reminder (Property 14): if
++ * the User already has an Entry for the linked Tracker on the current
++ * local calendar day, the Reminder is suppressed — otherwise it is
++ * delivered. Also honours the per-Reminder `enabled` flag and the User's
++ * global notification toggle (Req 8.3, 8.4).
++ *
++ * Re-evaluates suppression fresh on every call, so this same function
++ * doubles as the offline-reconnect re-check (Req 8.5) — callers just
++ * invoke it again once the device reconnects.
++ *
++ * `today` is injectable for tests; defaults to the current UTC date.
++ */
++export async function processReminderFire(
++  job: ReminderFireJob,
++  today: string = new Date().toISOString().slice(0, 10),
++): Promise<{ delivered: boolean }> {
++  const knex = getKnex();
++
++  const reminder = (await knex('reminders').where({ id: job.reminderId }).first()) as
++    | ReminderRow
++    | undefined;
++
++  if (!reminder || !reminder.enabled) {
++    return { delivered: false };
++  }
++
++  const user = (await knex('users')
++    .where({ id: job.userId })
++    .select('notifications_enabled')
++    .first()) as { notifications_enabled: boolean } | undefined;
++
++  if (!user || user.notifications_enabled === false) {
++    return { delivered: false };
++  }
++
++  // Req 8.3 — suppress if an Entry already exists today for this Tracker.
++  const todaysEntry = (await knex('entries')
++    .where({ tracker_id: job.trackerId, local_date: today })
++    .first()) as { id: string } | undefined;
++
++  if (todaysEntry) {
++    return { delivered: false };
++  }
++
++  const tracker = (await knex('trackers').where({ id: job.trackerId }).select('name').first()) as
++    | { name: string }
++    | undefined;
++
++  await deliverPushNotification({
++    userId: job.userId,
++    title: 'Reminder',
++    body: `Don't forget to log ${tracker?.name ?? 'your tracker'} today.`,
++  });
++
++  return { delivered: true };
++}
+diff --git a/api/src/types/index.ts b/api/src/types/index.ts
+index eee8a40..fe151a3 100644
+--- a/api/src/types/index.ts
++++ b/api/src/types/index.ts
+@@ -112,6 +112,15 @@ export interface Goal {
+   expiredAt: string | null;
+ }
+ 
++export interface Reminder {
++  id: string;
++  userId: string;
++  trackerId: string;
++  timeOfDay: string; // HH:MM, 24-hour, user's local time
++  daysOfWeek: number[]; // 0=Sun … 6=Sat
++  enabled: boolean;
++}
++
+ export interface TrendInsight {
+   id: string;
+   type: 'trend';
+diff --git a/api/src/workers/notif.worker.ts b/api/src/workers/notif.worker.ts
+new file mode 100644
+index 0000000..d7f6ed3
+--- /dev/null
++++ b/api/src/workers/notif.worker.ts
+@@ -0,0 +1,103 @@
++/**
++ * Notification Worker — processes the `notifications` queue: congratulatory
++ * pushes enqueued by streak.service.ts ('streak-milestone') and
++ * goal.service.ts ('goal-completed'), plus suppression-aware Reminder
++ * delivery ('reminder-fire') enqueued by notification.service.ts. Runs as
++ * its own process (`node dist/workers/notif.worker.js`) on VM2, separate
++ * from the HTTP server.
++ *
++ * Requirements: 4.5, 5.5, 8.2, 8.3, 8.5
++ */
++
++import { Worker } from 'bullmq';
++import type { Job } from 'bullmq';
++
++import { getKnex } from '../db/client';
++import {
++  NOTIFICATION_QUEUE_NAME,
++  deliverPushNotification,
++  processReminderFire,
++} from '../services/notification.service';
++import type { ReminderFireJob } from '../services/notification.service';
++
++interface StreakMilestoneJobData {
++  type: 'streak-milestone';
++  userId: string;
++  trackerId: string;
++  streak: number;
++}
++
++interface GoalCompletedJobData {
++  userId: string;
++  goalId: string;
++  trackerId: string;
++}
++
++type NotificationJobData = StreakMilestoneJobData | GoalCompletedJobData | ReminderFireJob;
++
++function getWorkerConnection(): { host: string; port: number } {
++  const redisUrl = process.env['REDIS_URL'];
++  if (redisUrl) {
++    const url = new URL(redisUrl);
++    return { host: url.hostname, port: url.port ? Number(url.port) : 6379 };
++  }
++  return { host: '127.0.0.1', port: 6379 };
++}
++
++async function trackerName(trackerId: string): Promise<string> {
++  const knex = getKnex();
++  const row = (await knex('trackers').where({ id: trackerId }).select('name').first()) as
++    | { name: string }
++    | undefined;
++  return row?.name ?? 'your tracker';
++}
++
++async function processJob(job: Job<NotificationJobData>): Promise<void> {
++  switch (job.name) {
++    case 'streak-milestone': {
++      const data = job.data as StreakMilestoneJobData;
++      await deliverPushNotification({
++        userId: data.userId,
++        title: 'Streak milestone! 🔥',
++        body: `${await trackerName(data.trackerId)}: ${data.streak}-day streak.`,
++      });
++      return;
++    }
++    case 'goal-completed': {
++      const data = job.data as GoalCompletedJobData;
++      await deliverPushNotification({
++        userId: data.userId,
++        title: 'Goal completed! 🎉',
++        body: `You reached your goal for ${await trackerName(data.trackerId)}.`,
++      });
++      return;
++    }
++    case 'reminder-fire': {
++      await processReminderFire(job.data as ReminderFireJob);
++      return;
++    }
++    default:
++      return;
++  }
++}
++
++export function startNotifWorker(): Worker<NotificationJobData> {
++  return new Worker<NotificationJobData>(NOTIFICATION_QUEUE_NAME, processJob, {
++    connection: getWorkerConnection(),
++    // Kept at 1 on purpose: VM2 has 1 OCPU / 1GB total, shared with the
++    // Express API and the other workers — a single concurrent job avoids
++    // competing for memory (matches insight.worker.ts / export.worker.ts).
++    concurrency: 1,
++  });
++}
++
++if (require.main === module) {
++  const worker = startNotifWorker();
++  // eslint-disable-next-line no-console
++  console.log('Notification worker started');
++
++  worker.on('failed', (job, err) => {
++    // eslint-disable-next-line no-console
++    console.error(`Notification job ${job?.id} failed:`, err);
++  });
++}

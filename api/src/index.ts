@@ -5,6 +5,7 @@ import trackerRouter from './routes/tracker.router';
 import goalRouter from './routes/goal.router';
 import insightRouter from './routes/insight.router';
 import exportRouter from './routes/export.router';
+import reminderRouter from './routes/reminder.router';
 
 const app = express();
 
@@ -19,5 +20,6 @@ app.use('/trackers', trackerRouter);
 app.use('/goals', goalRouter);
 app.use('/insights', insightRouter);
 app.use('/exports', exportRouter);
+app.use('/reminders', reminderRouter);
 
 export default app;

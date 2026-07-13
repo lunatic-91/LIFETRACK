@@ -112,6 +112,15 @@ export interface Goal {
   expiredAt: string | null;
 }
 
+export interface Reminder {
+  id: string;
+  userId: string;
+  trackerId: string;
+  timeOfDay: string; // HH:MM, 24-hour, user's local time
+  daysOfWeek: number[]; // 0=Sun … 6=Sat
+  enabled: boolean;
+}
+
 export interface TrendInsight {
   id: string;
   type: 'trend';
