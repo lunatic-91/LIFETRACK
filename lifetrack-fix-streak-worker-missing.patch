@@ -1,0 +1,54 @@
+diff --git a/api/src/workers/streak.worker.ts b/api/src/workers/streak.worker.ts
+new file mode 100644
+index 0000000..a250173
+--- /dev/null
++++ b/api/src/workers/streak.worker.ts
+@@ -0,0 +1,48 @@
++/**
++ * Streak Worker — processes the `streak-missed-day-check` queue: the daily
++ * repeatable job scheduled by `streak.service#scheduleMissedDayCheck`,
++ * which recalculates every Habit Tracker's streak so a stale streak is
++ * reset even when the User never opens the app to trigger a fresh
++ * `logEntry` call. Runs as its own process, separate from the HTTP server.
++ *
++ * Requirements: 4.2
++ */
++
++import { Worker } from 'bullmq';
++import type { Job } from 'bullmq';
++
++import { MISSED_DAY_QUEUE_NAME, runMissedDayCheck } from '../services/streak.service';
++
++function getWorkerConnection(): { host: string; port: number } {
++  const redisUrl = process.env['REDIS_URL'];
++  if (redisUrl) {
++    const url = new URL(redisUrl);
++    return { host: url.hostname, port: url.port ? Number(url.port) : 6379 };
++  }
++  return { host: '127.0.0.1', port: 6379 };
++}
++
++async function processJob(_job: Job<Record<string, never>>): Promise<void> {
++  await runMissedDayCheck();
++}
++
++export function startStreakWorker(): Worker<Record<string, never>> {
++  return new Worker<Record<string, never>>(MISSED_DAY_QUEUE_NAME, processJob, {
++    connection: getWorkerConnection(),
++    // runMissedDayCheck sweeps every non-archived Habit Tracker
++    // sequentially; a single concurrent run avoids overlapping sweeps if
++    // one is still in flight when the next cron tick fires.
++    concurrency: 1,
++  });
++}
++
++if (require.main === module) {
++  const worker = startStreakWorker();
++  // eslint-disable-next-line no-console
++  console.log('Streak worker started');
++
++  worker.on('failed', (job, err) => {
++    // eslint-disable-next-line no-console
++    console.error(`Streak job ${job?.id} failed:`, err);
++  });
++}
