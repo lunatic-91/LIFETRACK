@@ -143,6 +143,26 @@ export function _resetQueues(): void {
  *
  * Requirements: 4.1, 4.2, 4.6
  */
+export async function getStreak(userId: string, trackerId: string): Promise<StreakResult> {
+  const knex = getKnex();
+
+  const tracker = (await knex('trackers')
+    .where({ id: trackerId, user_id: userId })
+    .select('id')
+    .first()) as { id: string } | undefined;
+  if (!tracker) return { currentStreak: 0, longestStreak: 0 };
+
+  const row = (await knex('streaks')
+    .where({ tracker_id: trackerId })
+    .select('current_streak', 'longest_streak')
+    .first()) as { current_streak: number; longest_streak: number } | undefined;
+
+  return {
+    currentStreak: row?.current_streak ?? 0,
+    longestStreak: row?.longest_streak ?? 0,
+  };
+}
+
 export function calculateStreak(completions: boolean[], graceEnabled: boolean): StreakResult {
   let current = 0;
   let longest = 0;

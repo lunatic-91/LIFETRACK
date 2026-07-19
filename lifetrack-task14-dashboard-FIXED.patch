@@ -1,0 +1,985 @@
+diff --git a/api/src/routes/tracker.router.ts b/api/src/routes/tracker.router.ts
+index 6fbfdbc..34cbf56 100644
+--- a/api/src/routes/tracker.router.ts
++++ b/api/src/routes/tracker.router.ts
+@@ -14,6 +14,7 @@ import {
+   archiveTracker,
+   deleteTracker,
+ } from '../services/tracker.service';
++import { getStreak } from '../services/streak.service';
+ import entryRouter from './entry.router';
+ 
+ const router = Router();
+@@ -21,6 +22,13 @@ const router = Router();
+ router.use(requireAuth);
+ router.use('/:id/entries', entryRouter);
+ 
++// GET /trackers/:id/streak
++router.get('/:id/streak', async (req: Request, res: Response) => {
++  const userId = req.user!.sub;
++  const streak = await getStreak(userId, req.params['id']!);
++  res.status(200).json(streak);
++});
++
+ // POST /trackers
+ router.post('/', async (req: Request, res: Response) => {
+   const userId = req.user!.sub;
+diff --git a/api/src/services/streak.service.ts b/api/src/services/streak.service.ts
+index 24a02c2..5fd7d2a 100644
+--- a/api/src/services/streak.service.ts
++++ b/api/src/services/streak.service.ts
+@@ -143,6 +143,26 @@ export function _resetQueues(): void {
+  *
+  * Requirements: 4.1, 4.2, 4.6
+  */
++export async function getStreak(userId: string, trackerId: string): Promise<StreakResult> {
++  const knex = getKnex();
++
++  const tracker = (await knex('trackers')
++    .where({ id: trackerId, user_id: userId })
++    .select('id')
++    .first()) as { id: string } | undefined;
++  if (!tracker) return { currentStreak: 0, longestStreak: 0 };
++
++  const row = (await knex('streaks')
++    .where({ tracker_id: trackerId })
++    .select('current_streak', 'longest_streak')
++    .first()) as { current_streak: number; longest_streak: number } | undefined;
++
++  return {
++    currentStreak: row?.current_streak ?? 0,
++    longestStreak: row?.longest_streak ?? 0,
++  };
++}
++
+ export function calculateStreak(completions: boolean[], graceEnabled: boolean): StreakResult {
+   let current = 0;
+   let longest = 0;
+diff --git a/mobile/package.json b/mobile/package.json
+index bf765c3..3739d78 100644
+--- a/mobile/package.json
++++ b/mobile/package.json
+@@ -18,7 +18,7 @@
+     "@react-navigation/bottom-tabs": "6.5.20",
+     "@react-navigation/native": "6.1.17",
+     "@react-navigation/native-stack": "6.9.26",
+-    "@tanstack/react-query": "5.40.0",
++    "@tanstack/react-query": "5.55.0",
+     "@typescript-eslint/eslint-plugin": "8.63.0",
+     "@typescript-eslint/parser": "8.63.0",
+     "axios": "1.16.0",
+@@ -30,14 +30,14 @@
+     "react": "19.2.3",
+     "react-native": "^0.84.1",
+     "react-native-safe-area-context": "4.10.1",
++    "react-native-svg": "15.2.0",
+     "react-native-screens": "3.31.1"
+   },
+   "devDependencies": {
+     "@babel/core": "7.29.6",
+     "@testing-library/react-native": "12.5.1",
+     "@types/jest": "29.5.12",
+-    "@types/react": "18.2.79",
+-    "@types/react-native": "0.73.0",
++    "@types/react": "19.2.3",
+     "babel-jest": "29.7.0",
+     "fast-check": "3.19.0",
+     "jest": "29.7.0",
+diff --git a/mobile/src/api/trackers.ts b/mobile/src/api/trackers.ts
+new file mode 100644
+index 0000000..9c1f1f4
+--- /dev/null
++++ b/mobile/src/api/trackers.ts
+@@ -0,0 +1,71 @@
++import { apiClient } from '../lib/api.client';
++
++export interface Tracker {
++  id: string;
++  userId: string;
++  name: string;
++  dataType: 'numeric' | 'boolean' | 'text';
++  unit: string | null;
++  frequency: 'daily' | 'weekly' | { intervalDays: number };
++  validRange: { min: number; max: number } | null;
++  isHabit: boolean;
++  graceEnabled: boolean;
++  isArchived: boolean;
++  isBuiltin: boolean;
++  createdAt: string;
++}
++
++export interface Entry {
++  id: string;
++  trackerId: string;
++  userId: string;
++  value: number | boolean | string;
++  note: string | null;
++  localDate: string;
++  localTimestamp: string;
++  editTimestamp: string | null;
++}
++
++export interface Streak {
++  currentStreak: number;
++  longestStreak: number;
++}
++
++export interface Goal {
++  id: string;
++  trackerId: string;
++  targetValue: number;
++  direction: 'ascending' | 'descending';
++  deadline: string;
++  status: 'active' | 'completed' | 'expired';
++  progressPct: number;
++}
++
++export interface GroupedGoals {
++  active: Goal[];
++  completed: Goal[];
++  expired: Goal[];
++}
++
++export async function fetchTrackers(): Promise<Tracker[]> {
++  const { data } = await apiClient.get<Tracker[]>('/trackers');
++  return data;
++}
++
++export async function fetchStreak(trackerId: string): Promise<Streak> {
++  const { data } = await apiClient.get<Streak>(`/trackers/${trackerId}/streak`);
++  return data;
++}
++
++export async function fetchEntries(
++  trackerId: string,
++  params: { start?: string; end?: string; limit?: number } = {},
++): Promise<Entry[]> {
++  const { data } = await apiClient.get<Entry[]>(`/trackers/${trackerId}/entries`, { params });
++  return data;
++}
++
++export async function fetchGoals(): Promise<GroupedGoals> {
++  const { data } = await apiClient.get<GroupedGoals>('/goals');
++  return data;
++}
+diff --git a/mobile/src/components/EnergyTrendChart.tsx b/mobile/src/components/EnergyTrendChart.tsx
+new file mode 100644
+index 0000000..ac29cb2
+--- /dev/null
++++ b/mobile/src/components/EnergyTrendChart.tsx
+@@ -0,0 +1,49 @@
++import { useQuery } from '@tanstack/react-query';
++import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
++
++import { fetchEntries } from '../api/trackers';
++import { computeWeeklyTrend } from '../lib/trends';
++import WeeklyBarChart from './WeeklyBarChart';
++
++interface Props {
++  energyTrackerId: string;
++}
++
++function todayLocalDate(): string {
++  return new Date().toISOString().slice(0, 10);
++}
++
++/**
++ * Requirements: 7.6
++ */
++export default function EnergyTrendChart({ energyTrackerId }: Props) {
++  const today = todayLocalDate();
++
++  const { data, isLoading } = useQuery({
++    queryKey: ['entries', energyTrackerId, 'weekly'],
++    queryFn: () =>
++      fetchEntries(energyTrackerId, {
++        start: new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10),
++        end: today,
++      }),
++  });
++
++  if (isLoading) return <ActivityIndicator />;
++
++  const points = computeWeeklyTrend(
++    (data ?? []).map((e) => ({ localDate: e.localDate, value: Number(e.value) })),
++    today,
++  );
++
++  return (
++    <View style={styles.container}>
++      <Text style={styles.title}>Énergie — 7 derniers jours</Text>
++      <WeeklyBarChart points={points} color="#22c55e" maxScale={10} />
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { marginBottom: 16 },
++  title: { fontSize: 14, fontWeight: '600', marginBottom: 8, color: '#444' },
++});
+diff --git a/mobile/src/components/LowMoodBanner.tsx b/mobile/src/components/LowMoodBanner.tsx
+new file mode 100644
+index 0000000..2608c09
+--- /dev/null
++++ b/mobile/src/components/LowMoodBanner.tsx
+@@ -0,0 +1,35 @@
++import { View, Text, Pressable, StyleSheet, Linking } from 'react-native';
++
++import { isLowMood, LOW_MOOD_MESSAGE, LOW_MOOD_RESOURCE_LABEL, LOW_MOOD_RESOURCE_URL } from '../lib/lowMood';
++
++interface Props {
++  moodValue: number;
++}
++
++/**
++ * Requirements: 7.5
++ */
++export default function LowMoodBanner({ moodValue }: Props) {
++  if (!isLowMood(moodValue)) return null;
++
++  return (
++    <View style={styles.banner}>
++      <Text style={styles.message}>{LOW_MOOD_MESSAGE}</Text>
++      <Pressable onPress={() => Linking.openURL(LOW_MOOD_RESOURCE_URL)}>
++        <Text style={styles.link}>{LOW_MOOD_RESOURCE_LABEL}</Text>
++      </Pressable>
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  banner: {
++    backgroundColor: '#fef3c7',
++    borderRadius: 12,
++    padding: 14,
++    marginBottom: 16,
++    gap: 8,
++  },
++  message: { fontSize: 14, color: '#78350f', lineHeight: 20 },
++  link: { fontSize: 14, fontWeight: '600', color: '#92400e', textDecorationLine: 'underline' },
++});
+diff --git a/mobile/src/components/MoodTrendChart.tsx b/mobile/src/components/MoodTrendChart.tsx
+new file mode 100644
+index 0000000..eee67f2
+--- /dev/null
++++ b/mobile/src/components/MoodTrendChart.tsx
+@@ -0,0 +1,49 @@
++import { useQuery } from '@tanstack/react-query';
++import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
++
++import { fetchEntries } from '../api/trackers';
++import { computeWeeklyTrend } from '../lib/trends';
++import WeeklyBarChart from './WeeklyBarChart';
++
++interface Props {
++  moodTrackerId: string;
++}
++
++function todayLocalDate(): string {
++  return new Date().toISOString().slice(0, 10);
++}
++
++/**
++ * Requirements: 7.4
++ */
++export default function MoodTrendChart({ moodTrackerId }: Props) {
++  const today = todayLocalDate();
++
++  const { data, isLoading } = useQuery({
++    queryKey: ['entries', moodTrackerId, 'weekly'],
++    queryFn: () =>
++      fetchEntries(moodTrackerId, {
++        start: new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10),
++        end: today,
++      }),
++  });
++
++  if (isLoading) return <ActivityIndicator />;
++
++  const points = computeWeeklyTrend(
++    (data ?? []).map((e) => ({ localDate: e.localDate, value: Number(e.value) })),
++    today,
++  );
++
++  return (
++    <View style={styles.container}>
++      <Text style={styles.title}>Humeur — 7 derniers jours</Text>
++      <WeeklyBarChart points={points} color="#f59e0b" maxScale={10} />
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { marginBottom: 16 },
++  title: { fontSize: 14, fontWeight: '600', marginBottom: 8, color: '#444' },
++});
+diff --git a/mobile/src/components/TrackerCard.tsx b/mobile/src/components/TrackerCard.tsx
+new file mode 100644
+index 0000000..b04d0c4
+--- /dev/null
++++ b/mobile/src/components/TrackerCard.tsx
+@@ -0,0 +1,79 @@
++import { View, Text, StyleSheet } from 'react-native';
++
++import type { TrackerCardData } from '../hooks/useDashboardData';
++
++interface Props {
++  data: TrackerCardData;
++}
++
++/**
++ * Requirements: 6.2, 6.6
++ */
++export default function TrackerCard({ data }: Props) {
++  const { tracker, currentStreak, latestEntryValue, hasPendingEntryToday, goalProgressPct } = data;
++
++  return (
++    <View style={[styles.card, hasPendingEntryToday && styles.cardPending]}>
++      {hasPendingEntryToday && (
++        <View style={styles.badge}>
++          <Text style={styles.badgeText}>À faire</Text>
++        </View>
++      )}
++
++      <Text style={styles.name}>{tracker.name}</Text>
++
++      <View style={styles.row}>
++        <Text style={styles.value}>
++          {latestEntryValue === null ? '—' : String(latestEntryValue)}
++          {tracker.unit ? ` ${tracker.unit}` : ''}
++        </Text>
++
++        {tracker.isHabit && (
++          <Text style={styles.streak}>🔥 {currentStreak}j</Text>
++        )}
++      </View>
++
++      {goalProgressPct !== null && (
++        <View style={styles.progressTrack}>
++          <View style={[styles.progressFill, { width: `${Math.min(100, Math.max(0, goalProgressPct))}%` }]} />
++        </View>
++      )}
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  card: {
++    borderRadius: 12,
++    borderWidth: 1,
++    borderColor: '#e5e5e5',
++    padding: 14,
++    marginBottom: 10,
++    backgroundColor: '#fff',
++  },
++  cardPending: {
++    borderColor: '#111',
++    borderWidth: 1.5,
++  },
++  badge: {
++    alignSelf: 'flex-start',
++    backgroundColor: '#111',
++    borderRadius: 6,
++    paddingHorizontal: 8,
++    paddingVertical: 2,
++    marginBottom: 6,
++  },
++  badgeText: { color: '#fff', fontSize: 11, fontWeight: '600' },
++  name: { fontSize: 16, fontWeight: '600', marginBottom: 4 },
++  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
++  value: { fontSize: 20, fontWeight: '500' },
++  streak: { fontSize: 14, color: '#888' },
++  progressTrack: {
++    height: 6,
++    borderRadius: 3,
++    backgroundColor: '#eee',
++    marginTop: 10,
++    overflow: 'hidden',
++  },
++  progressFill: { height: '100%', backgroundColor: '#111' },
++});
+diff --git a/mobile/src/components/TrackerChart.tsx b/mobile/src/components/TrackerChart.tsx
+new file mode 100644
+index 0000000..8d690f0
+--- /dev/null
++++ b/mobile/src/components/TrackerChart.tsx
+@@ -0,0 +1,110 @@
++import { useState } from 'react';
++import { View, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
++import { useQuery } from '@tanstack/react-query';
++import Svg, { Polyline, Rect, Circle } from 'react-native-svg';
++
++import { fetchEntries } from '../api/trackers';
++import type { Tracker } from '../api/trackers';
++import { rangeToDates, scaleToChart, type ChartRange } from '../lib/chartMath';
++
++interface Props {
++  tracker: Tracker;
++}
++
++const RANGES: ChartRange[] = ['7d', '30d', '90d', '12m'];
++const RANGE_LABELS: Record<ChartRange, string> = { '7d': '7j', '30d': '30j', '90d': '90j', '12m': '12m' };
++
++const CHART_WIDTH = 300;
++const CHART_HEIGHT = 140;
++
++function todayLocalDate(): string {
++  return new Date().toISOString().slice(0, 10);
++}
++
++/**
++ * Requirements: 6.3, 6.4, 6.5, 6.8
++ */
++export default function TrackerChart({ tracker }: Props) {
++  const [range, setRange] = useState<ChartRange>('7d');
++  const today = todayLocalDate();
++  const { start, end } = rangeToDates(range, today);
++
++  const { data, isLoading } = useQuery({
++    queryKey: ['entries', tracker.id, range],
++    queryFn: () => fetchEntries(tracker.id, { start, end }),
++  });
++
++  const entries = [...(data ?? [])].sort((a, b) => a.localDate.localeCompare(b.localDate));
++
++  return (
++    <View style={styles.container}>
++      <View style={styles.rangeRow}>
++        {RANGES.map((r) => (
++          <Pressable key={r} onPress={() => setRange(r)} style={[styles.rangeBtn, r === range && styles.rangeBtnActive]}>
++            <Text style={[styles.rangeText, r === range && styles.rangeTextActive]}>{RANGE_LABELS[r]}</Text>
++          </Pressable>
++        ))}
++      </View>
++
++      {isLoading ? (
++        <ActivityIndicator />
++      ) : entries.length === 0 ? (
++        <Text style={styles.empty}>Aucune donnée pour cette période</Text>
++      ) : tracker.dataType === 'boolean' ? (
++        <BarChart entries={entries} />
++      ) : (
++        <LineChart entries={entries} />
++      )}
++    </View>
++  );
++}
++
++function LineChart({ entries }: { entries: { value: number | boolean | string }[] }) {
++  const values = entries.map((e) => Number(e.value));
++  const points = scaleToChart(values, CHART_WIDTH, CHART_HEIGHT);
++  const polylinePoints = points.map((p) => `${p.x},${p.y}`).join(' ');
++
++  return (
++    <Svg width={CHART_WIDTH} height={CHART_HEIGHT}>
++      <Polyline points={polylinePoints} fill="none" stroke="#111" strokeWidth={2} />
++      {points.map((p, i) => (
++        <Circle key={i} cx={p.x} cy={p.y} r={3} fill="#111" />
++      ))}
++    </Svg>
++  );
++}
++
++function BarChart({ entries }: { entries: { value: number | boolean | string }[] }) {
++  const barWidth = Math.max(4, CHART_WIDTH / entries.length - 4);
++
++  return (
++    <Svg width={CHART_WIDTH} height={CHART_HEIGHT}>
++      {entries.map((e, i) => {
++        const completed = Boolean(e.value);
++        const barHeight = completed ? CHART_HEIGHT : 4;
++        const x = i * (CHART_WIDTH / entries.length);
++        return (
++          <Rect
++            key={i}
++            x={x}
++            y={CHART_HEIGHT - barHeight}
++            width={barWidth}
++            height={barHeight}
++            rx={2}
++            fill={completed ? '#22c55e' : '#e5e5e5'}
++          />
++        );
++      })}
++    </Svg>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { marginVertical: 8 },
++  rangeRow: { flexDirection: 'row', gap: 6, marginBottom: 12 },
++  rangeBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, backgroundColor: '#f0f0f0' },
++  rangeBtnActive: { backgroundColor: '#111' },
++  rangeText: { fontSize: 12, color: '#444' },
++  rangeTextActive: { color: '#fff' },
++  empty: { color: '#888', fontSize: 13, paddingVertical: 24, textAlign: 'center' },
++});
+diff --git a/mobile/src/components/WeeklyBarChart.tsx b/mobile/src/components/WeeklyBarChart.tsx
+new file mode 100644
+index 0000000..0833ee8
+--- /dev/null
++++ b/mobile/src/components/WeeklyBarChart.tsx
+@@ -0,0 +1,65 @@
++import { Fragment } from 'react';
++import { View, Text, StyleSheet } from 'react-native';
++import Svg, { Rect, Text as SvgText } from 'react-native-svg';
++
++import type { WeeklyTrendPoint } from '../lib/trends';
++
++interface Props {
++  points: WeeklyTrendPoint[];
++  color: string;
++  maxScale: number; // e.g. 10 for a 1-10 mood/energy scale
++}
++
++const CHART_HEIGHT = 120;
++const BAR_WIDTH = 28;
++const GAP = 10;
++
++function dayLabel(dateStr: string): string {
++  const d = new Date(`${dateStr}T00:00:00.000Z`);
++  return ['D', 'L', 'M', 'M', 'J', 'V', 'S'][d.getUTCDay()]!;
++}
++
++export default function WeeklyBarChart({ points, color, maxScale }: Props) {
++  const width = points.length * (BAR_WIDTH + GAP);
++
++  return (
++    <View>
++      <Svg width={width} height={CHART_HEIGHT + 24}>
++        {points.map((point, i) => {
++          const x = i * (BAR_WIDTH + GAP);
++          const value = point.average ?? 0;
++          const barHeight = Math.max(2, (value / maxScale) * CHART_HEIGHT);
++
++          return (
++            <Fragment key={point.date}>
++              <Rect
++                x={x}
++                y={CHART_HEIGHT - barHeight}
++                width={BAR_WIDTH}
++                height={barHeight}
++                rx={4}
++                fill={point.average === null ? '#e5e5e5' : color}
++              />
++              <SvgText
++                x={x + BAR_WIDTH / 2}
++                y={CHART_HEIGHT + 16}
++                fontSize={11}
++                fill="#888"
++                textAnchor="middle"
++              >
++                {dayLabel(point.date)}
++              </SvgText>
++            </Fragment>
++          );
++        })}
++      </Svg>
++      {points.every((p) => p.average === null) && (
++        <Text style={styles.empty}>Pas de données pour cette période</Text>
++      )}
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  empty: { color: '#888', fontSize: 13, marginTop: 8 },
++});
+diff --git a/mobile/src/hooks/useDashboardData.ts b/mobile/src/hooks/useDashboardData.ts
+new file mode 100644
+index 0000000..aa3977d
+--- /dev/null
++++ b/mobile/src/hooks/useDashboardData.ts
+@@ -0,0 +1,50 @@
++import { useQuery } from '@tanstack/react-query';
++
++import { fetchTrackers, fetchStreak, fetchEntries, fetchGoals } from '../api/trackers';
++import type { Tracker } from '../api/trackers';
++
++export interface TrackerCardData {
++  tracker: Tracker;
++  currentStreak: number;
++  latestEntryValue: number | boolean | string | null;
++  hasPendingEntryToday: boolean;
++  goalProgressPct: number | null;
++}
++
++function todayLocalDate(): string {
++  return new Date().toISOString().slice(0, 10);
++}
++
++async function loadTrackerCard(tracker: Tracker): Promise<TrackerCardData> {
++  const [streak, entries, goals] = await Promise.all([
++    tracker.isHabit ? fetchStreak(tracker.id) : Promise.resolve({ currentStreak: 0, longestStreak: 0 }),
++    fetchEntries(tracker.id, { limit: 1 }),
++    fetchGoals(),
++  ]);
++
++  const latestEntry = entries[0] ?? null;
++  const today = todayLocalDate();
++
++  const linkedGoal = goals.active.find((g) => g.trackerId === tracker.id);
++
++  return {
++    tracker,
++    currentStreak: streak.currentStreak,
++    latestEntryValue: latestEntry?.value ?? null,
++    hasPendingEntryToday: latestEntry?.localDate !== today,
++    goalProgressPct: linkedGoal?.progressPct ?? null,
++  };
++}
++
++/**
++ * Requirements: 6.1, 6.2, 6.6
++ */
++export function useDashboardData() {
++  return useQuery({
++    queryKey: ['dashboard'],
++    queryFn: async (): Promise<TrackerCardData[]> => {
++      const trackers = await fetchTrackers();
++      return Promise.all(trackers.map(loadTrackerCard));
++    },
++  });
++}
+diff --git a/mobile/src/lib/__tests__/lowMood.property.test.ts b/mobile/src/lib/__tests__/lowMood.property.test.ts
+new file mode 100644
+index 0000000..54b109d
+--- /dev/null
++++ b/mobile/src/lib/__tests__/lowMood.property.test.ts
+@@ -0,0 +1,38 @@
++/**
++ * Property-based tests for src/lib/lowMood.ts — low mood trigger.
++ * Feature: lifetrack-app
++ */
++
++import * as fc from 'fast-check';
++
++import { isLowMood, LOW_MOOD_MESSAGE, LOW_MOOD_RESOURCE_URL, wordCount } from '../lowMood';
++
++// ---------------------------------------------------------------------------
++// Property 13: Low mood entry triggers supportive content
++// Validates: Requirements 7.5
++// ---------------------------------------------------------------------------
++
++describe('Property 13: Low mood entry triggers supportive content', () => {
++  // Feature: lifetrack-app, Property 13: Low mood entry triggers supportive content
++
++  test('isLowMood is true for values 1-3 and false for values 4-10', async () => {
++    await fc.assert(
++      fc.asyncProperty(fc.integer({ min: 1, max: 10 }), async (value) => {
++        expect(isLowMood(value)).toBe(value <= 3);
++      }),
++    );
++  });
++
++  test('the supportive message is <= 50 words', () => {
++    expect(wordCount(LOW_MOOD_MESSAGE)).toBeLessThanOrEqual(50);
++  });
++
++  test('a well-being resource link is defined and well-formed', () => {
++    expect(LOW_MOOD_RESOURCE_URL).toMatch(/^https:\/\//);
++  });
++
++  test('boundary values 3 and 4 are on the correct side of the threshold', () => {
++    expect(isLowMood(3)).toBe(true);
++    expect(isLowMood(4)).toBe(false);
++  });
++});
+diff --git a/mobile/src/lib/__tests__/trends.property.test.ts b/mobile/src/lib/__tests__/trends.property.test.ts
+new file mode 100644
+index 0000000..67c409b
+--- /dev/null
++++ b/mobile/src/lib/__tests__/trends.property.test.ts
+@@ -0,0 +1,65 @@
++/**
++ * Property-based tests for src/lib/trends.ts — weekly average calculation.
++ * Feature: lifetrack-app
++ */
++
++import * as fc from 'fast-check';
++
++import { computeWeeklyTrend } from '../trends';
++
++function addDays(dateStr: string, n: number): string {
++  const d = new Date(`${dateStr}T00:00:00.000Z`);
++  d.setUTCDate(d.getUTCDate() + n);
++  return d.toISOString().slice(0, 10);
++}
++
++// ---------------------------------------------------------------------------
++// Property 12: Weekly trend chart average calculation
++// Validates: Requirements 7.4, 7.6
++// ---------------------------------------------------------------------------
++
++describe('Property 12: Weekly trend chart average calculation', () => {
++  // Feature: lifetrack-app, Property 12: Weekly trend chart average calculation
++
++  test('each day in the window equals the arithmetic mean of that day\'s entries', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        fc.array(fc.integer({ min: 1, max: 10 }), { minLength: 0, maxLength: 5 }), // day 0
++        fc.array(fc.integer({ min: 1, max: 10 }), { minLength: 0, maxLength: 5 }), // day 3
++        fc.array(fc.integer({ min: 1, max: 10 }), { minLength: 0, maxLength: 5 }), // day 6 (today)
++        async (day0Values, day3Values, day6Values) => {
++          const today = '2026-07-19';
++          const entries = [
++            ...day0Values.map((v) => ({ localDate: addDays(today, -6), value: v })),
++            ...day3Values.map((v) => ({ localDate: addDays(today, -3), value: v })),
++            ...day6Values.map((v) => ({ localDate: today, value: v })),
++          ];
++
++          const points = computeWeeklyTrend(entries, today);
++          expect(points).toHaveLength(7);
++
++          const expectedAverage = (values: number[]): number | null =>
++            values.length === 0 ? null : values.reduce((a, b) => a + b, 0) / values.length;
++
++          expect(points[0]!.average).toBe(expectedAverage(day0Values));
++          expect(points[3]!.average).toBe(expectedAverage(day3Values));
++          expect(points[6]!.average).toBe(expectedAverage(day6Values));
++        },
++      ),
++    );
++  });
++
++  test('days with no entries use null as the placeholder', () => {
++    const points = computeWeeklyTrend([], '2026-07-19');
++    expect(points).toHaveLength(7);
++    for (const point of points) {
++      expect(point.average).toBeNull();
++    }
++  });
++
++  test('the window always spans exactly 7 consecutive days ending on today', () => {
++    const points = computeWeeklyTrend([], '2026-07-19');
++    expect(points[0]!.date).toBe('2026-07-13');
++    expect(points[6]!.date).toBe('2026-07-19');
++  });
++});
+diff --git a/mobile/src/lib/chartMath.ts b/mobile/src/lib/chartMath.ts
+new file mode 100644
+index 0000000..4a7369f
+--- /dev/null
++++ b/mobile/src/lib/chartMath.ts
+@@ -0,0 +1,30 @@
++export type ChartRange = '7d' | '30d' | '90d' | '12m';
++
++export function rangeToDates(range: ChartRange, today: string): { start: string; end: string } {
++  const days: Record<ChartRange, number> = { '7d': 7, '30d': 30, '90d': 90, '12m': 365 };
++  const d = new Date(`${today}T00:00:00.000Z`);
++  d.setUTCDate(d.getUTCDate() - (days[range] - 1));
++  return { start: d.toISOString().slice(0, 10), end: today };
++}
++
++export interface ChartPoint {
++  x: number;
++  y: number;
++}
++
++/**
++ * Maps a values array onto normalized SVG coordinates within
++ * [0, width] x [0, height], oldest entry first (left to right).
++ */
++export function scaleToChart(values: number[], width: number, height: number): ChartPoint[] {
++  if (values.length === 0) return [];
++  const min = Math.min(...values);
++  const max = Math.max(...values);
++  const range = max - min || 1;
++  const stepX = values.length > 1 ? width / (values.length - 1) : 0;
++
++  return values.map((v, i) => ({
++    x: i * stepX,
++    y: height - ((v - min) / range) * height,
++  }));
++}
+diff --git a/mobile/src/lib/lowMood.ts b/mobile/src/lib/lowMood.ts
+new file mode 100644
+index 0000000..dfafc64
+--- /dev/null
++++ b/mobile/src/lib/lowMood.ts
+@@ -0,0 +1,21 @@
++export const LOW_MOOD_THRESHOLD = 3;
++
++/**
++ * Requirements: 7.5
++ */
++export function isLowMood(value: number): boolean {
++  return value <= LOW_MOOD_THRESHOLD;
++}
++
++export function wordCount(text: string): number {
++  return text.trim().split(/\s+/).filter(Boolean).length;
++}
++
++// Kept to <=50 words (Req 7.5 / Property 13).
++export const LOW_MOOD_MESSAGE =
++  "It looks like today has been tough. That's okay — difficult days happen, " +
++  'and reaching out for support is a sign of strength, not weakness. ' +
++  'You deserve care, and help is available whenever you need it.';
++
++export const LOW_MOOD_RESOURCE_LABEL = 'Find well-being resources';
++export const LOW_MOOD_RESOURCE_URL = 'https://988lifeline.org';
+diff --git a/mobile/src/lib/trends.ts b/mobile/src/lib/trends.ts
+new file mode 100644
+index 0000000..31b571e
+--- /dev/null
++++ b/mobile/src/lib/trends.ts
+@@ -0,0 +1,49 @@
++export interface DailyEntry {
++  localDate: string; // YYYY-MM-DD
++  value: number;
++}
++
++export interface WeeklyTrendPoint {
++  date: string; // YYYY-MM-DD
++  average: number | null; // null = no Entry that day (placeholder)
++}
++
++function toDateOnly(d: Date): string {
++  return d.toISOString().slice(0, 10);
++}
++
++function addDays(dateStr: string, n: number): string {
++  const d = new Date(`${dateStr}T00:00:00.000Z`);
++  d.setUTCDate(d.getUTCDate() + n);
++  return toDateOnly(d);
++}
++
++/**
++ * Computes the arithmetic mean of Entry values per local calendar day for
++ * the 7 days ending on `today` (inclusive). Days with no Entries get
++ * `average: null` so the UI can render a zero bar or a placeholder dash,
++ * per Req 7.4 / 7.6 ("using zero or a visual placeholder").
++ *
++ * Requirements: 7.4, 7.6
++ */
++export function computeWeeklyTrend(entries: DailyEntry[], today: string): WeeklyTrendPoint[] {
++  const byDate = new Map<string, number[]>();
++  for (const entry of entries) {
++    const list = byDate.get(entry.localDate) ?? [];
++    list.push(entry.value);
++    byDate.set(entry.localDate, list);
++  }
++
++  const startDate = addDays(today, -6);
++  const points: WeeklyTrendPoint[] = [];
++
++  for (let i = 0; i < 7; i++) {
++    const date = addDays(startDate, i);
++    const values = byDate.get(date);
++    const average =
++      values && values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null;
++    points.push({ date, average });
++  }
++
++  return points;
++}
+diff --git a/mobile/src/screens/DashboardScreen.tsx b/mobile/src/screens/DashboardScreen.tsx
+index 9a3be4b..03607fd 100644
+--- a/mobile/src/screens/DashboardScreen.tsx
++++ b/mobile/src/screens/DashboardScreen.tsx
+@@ -1,16 +1,65 @@
+-import { View, Text, StyleSheet } from 'react-native';
++import { View, Text, FlatList, ActivityIndicator, StyleSheet, RefreshControl, Pressable } from 'react-native';
++import { useRouter } from 'expo-router';
+ 
++import { useDashboardData } from '../hooks/useDashboardData';
++import TrackerCard from '../components/TrackerCard';
++import MoodTrendChart from '../components/MoodTrendChart';
++import EnergyTrendChart from '../components/EnergyTrendChart';
++import LowMoodBanner from '../components/LowMoodBanner';
++
++/**
++ * Requirements: 6.1, 6.2, 6.6, 6.7, 7.4, 7.5, 7.6
++ */
+ export default function DashboardScreen(): JSX.Element {
++  const router = useRouter();
++  const { data: cards, isLoading, isRefetching, refetch } = useDashboardData();
++
++  const moodTracker = cards?.find((c) => c.tracker.isBuiltin && c.tracker.name === 'Mood');
++  const energyTracker = cards?.find((c) => c.tracker.isBuiltin && c.tracker.name === 'Energy');
++
++  if (isLoading) {
++    return (
++      <View style={styles.centered}>
++        <ActivityIndicator />
++      </View>
++    );
++  }
++
++  if (!cards || cards.length === 0) {
++    return (
++      <View style={styles.centered}>
++        <Text style={styles.emptyTitle}>Aucun tracker pour l'instant</Text>
++        <Pressable style={styles.cta} onPress={() => router.push('/(tabs)/settings')}>
++          <Text style={styles.ctaText}>Créer mon premier tracker</Text>
++        </Pressable>
++      </View>
++    );
++  }
++
+   return (
+-    <View style={styles.container}>
+-      <Text style={styles.title}>Dashboard</Text>
+-      <Text style={styles.subtitle}>À implémenter</Text>
+-    </View>
++    <FlatList
++      data={cards}
++      keyExtractor={(item) => item.tracker.id}
++      contentContainerStyle={styles.list}
++      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
++      ListHeaderComponent={
++        <>
++          {moodTracker && typeof moodTracker.latestEntryValue === 'number' && (
++            <LowMoodBanner moodValue={moodTracker.latestEntryValue} />
++          )}
++          {moodTracker && <MoodTrendChart moodTrackerId={moodTracker.tracker.id} />}
++          {energyTracker && <EnergyTrendChart energyTrackerId={energyTracker.tracker.id} />}
++        </>
++      }
++      renderItem={({ item }) => <TrackerCard data={item} />}
++    />
+   );
+ }
+ 
+ const styles = StyleSheet.create({
+-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
+-  title: { fontSize: 22, fontWeight: '600' },
+-  subtitle: { color: '#888' },
++  list: { padding: 16 },
++  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16, padding: 24 },
++  emptyTitle: { fontSize: 16, color: '#666' },
++  cta: { backgroundColor: '#111', borderRadius: 8, paddingHorizontal: 20, paddingVertical: 12 },
++  ctaText: { color: '#fff', fontWeight: '600' },
+ });
+diff --git a/mobile/src/types/jsx.d.ts b/mobile/src/types/jsx.d.ts
+new file mode 100644
+index 0000000..9b1ebc7
+--- /dev/null
++++ b/mobile/src/types/jsx.d.ts
+@@ -0,0 +1,25 @@
++/**
++ * React 19's types moved the ambient `JSX` namespace to `React.JSX` and no
++ * longer declare a global one. This codebase's screens/components widely
++ * use the bare `: JSX.Element` return-type convention (predating the
++ * React 19 bump) — this shim re-exposes that global namespace as an alias
++ * for `React.JSX`, so existing and future files don't all need to switch
++ * to fully-qualified `React.JSX.Element` one by one.
++ */
++import type React from 'react';
++
++declare global {
++  namespace JSX {
++    type Element = React.JSX.Element;
++    type ElementType = React.JSX.ElementType;
++    type ElementClass = React.JSX.ElementClass;
++    interface ElementAttributesProperty extends React.JSX.ElementAttributesProperty {}
++    interface ElementChildrenAttribute extends React.JSX.ElementChildrenAttribute {}
++    type LibraryManagedAttributes<C, P> = React.JSX.LibraryManagedAttributes<C, P>;
++    interface IntrinsicAttributes extends React.JSX.IntrinsicAttributes {}
++    interface IntrinsicClassAttributes<T> extends React.JSX.IntrinsicClassAttributes<T> {}
++    interface IntrinsicElements extends React.JSX.IntrinsicElements {}
++  }
++}
++
++export {};

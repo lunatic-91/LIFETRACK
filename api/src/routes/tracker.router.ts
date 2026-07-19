@@ -14,12 +14,20 @@ import {
   archiveTracker,
   deleteTracker,
 } from '../services/tracker.service';
+import { getStreak } from '../services/streak.service';
 import entryRouter from './entry.router';
 
 const router = Router();
 
 router.use(requireAuth);
 router.use('/:id/entries', entryRouter);
+
+// GET /trackers/:id/streak
+router.get('/:id/streak', async (req: Request, res: Response) => {
+  const userId = req.user!.sub;
+  const streak = await getStreak(userId, req.params['id']!);
+  res.status(200).json(streak);
+});
 
 // POST /trackers
 router.post('/', async (req: Request, res: Response) => {
