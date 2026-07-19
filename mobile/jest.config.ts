@@ -1,7 +1,6 @@
 import type { Config } from 'jest';
 
 const config: Config = {
-  preset: 'jest-expo',
   testEnvironment: 'node',
   testMatch: [
     '**/__tests__/**/*.test.ts',
@@ -24,6 +23,7 @@ const config: Config = {
   },
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
+    '^expo-secure-store$': '<rootDir>/src/__mocks__/expo-secure-store.ts',
   },
   collectCoverageFrom: [
     'src/**/*.ts',

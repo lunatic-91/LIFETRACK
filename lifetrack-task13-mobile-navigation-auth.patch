@@ -1,0 +1,733 @@
+diff --git a/mobile/app/(auth)/_layout.tsx b/mobile/app/(auth)/_layout.tsx
+new file mode 100644
+index 0000000..e7ad6bc
+--- /dev/null
++++ b/mobile/app/(auth)/_layout.tsx
+@@ -0,0 +1,5 @@
++import { Stack } from 'expo-router';
++
++export default function AuthLayout(): JSX.Element {
++  return <Stack screenOptions={{ headerShown: false }} />;
++}
+diff --git a/mobile/app/(auth)/forgot-password.tsx b/mobile/app/(auth)/forgot-password.tsx
+new file mode 100644
+index 0000000..8ace44f
+--- /dev/null
++++ b/mobile/app/(auth)/forgot-password.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/ForgotPasswordScreen';
+diff --git a/mobile/app/(auth)/login.tsx b/mobile/app/(auth)/login.tsx
+new file mode 100644
+index 0000000..eca52ae
+--- /dev/null
++++ b/mobile/app/(auth)/login.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/LoginScreen';
+diff --git a/mobile/app/(auth)/register.tsx b/mobile/app/(auth)/register.tsx
+new file mode 100644
+index 0000000..ccd2836
+--- /dev/null
++++ b/mobile/app/(auth)/register.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/RegisterScreen';
+diff --git a/mobile/app/(tabs)/_layout.tsx b/mobile/app/(tabs)/_layout.tsx
+new file mode 100644
+index 0000000..466358c
+--- /dev/null
++++ b/mobile/app/(tabs)/_layout.tsx
+@@ -0,0 +1,13 @@
++import { Tabs } from 'expo-router';
++
++export default function TabsLayout(): JSX.Element {
++  return (
++    <Tabs screenOptions={{ headerShown: true }}>
++      <Tabs.Screen name="index" options={{ title: 'Dashboard' }} />
++      <Tabs.Screen name="goals" options={{ title: 'Goals' }} />
++      <Tabs.Screen name="insights" options={{ title: 'Insights' }} />
++      <Tabs.Screen name="export" options={{ title: 'Export' }} />
++      <Tabs.Screen name="settings" options={{ title: 'Settings' }} />
++    </Tabs>
++  );
++}
+diff --git a/mobile/app/(tabs)/export.tsx b/mobile/app/(tabs)/export.tsx
+new file mode 100644
+index 0000000..fbdb8de
+--- /dev/null
++++ b/mobile/app/(tabs)/export.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/ExportScreen';
+diff --git a/mobile/app/(tabs)/goals.tsx b/mobile/app/(tabs)/goals.tsx
+new file mode 100644
+index 0000000..73daa7c
+--- /dev/null
++++ b/mobile/app/(tabs)/goals.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/GoalsScreen';
+diff --git a/mobile/app/(tabs)/index.tsx b/mobile/app/(tabs)/index.tsx
+new file mode 100644
+index 0000000..2494c44
+--- /dev/null
++++ b/mobile/app/(tabs)/index.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/DashboardScreen';
+diff --git a/mobile/app/(tabs)/insights.tsx b/mobile/app/(tabs)/insights.tsx
+new file mode 100644
+index 0000000..1648732
+--- /dev/null
++++ b/mobile/app/(tabs)/insights.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/InsightsScreen';
+diff --git a/mobile/app/(tabs)/settings.tsx b/mobile/app/(tabs)/settings.tsx
+new file mode 100644
+index 0000000..a8896a8
+--- /dev/null
++++ b/mobile/app/(tabs)/settings.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/SettingsScreen';
+diff --git a/mobile/app/_layout.tsx b/mobile/app/_layout.tsx
+new file mode 100644
+index 0000000..abe3cb4
+--- /dev/null
++++ b/mobile/app/_layout.tsx
+@@ -0,0 +1,18 @@
++import { Stack } from 'expo-router';
++import { QueryClientProvider } from '@tanstack/react-query';
++import { StatusBar } from 'expo-status-bar';
++
++import { queryClient } from '../src/lib/queryClient';
++
++export default function RootLayout(): JSX.Element {
++  return (
++    <QueryClientProvider client={queryClient}>
++      <StatusBar style="auto" />
++      <Stack screenOptions={{ headerShown: false }}>
++        <Stack.Screen name="index" />
++        <Stack.Screen name="(auth)" />
++        <Stack.Screen name="(tabs)" />
++      </Stack>
++    </QueryClientProvider>
++  );
++}
+diff --git a/mobile/app/index.tsx b/mobile/app/index.tsx
+new file mode 100644
+index 0000000..68f0f4e
+--- /dev/null
++++ b/mobile/app/index.tsx
+@@ -0,0 +1,26 @@
++import { useEffect, useState } from 'react';
++import { View, ActivityIndicator } from 'react-native';
++import { Redirect } from 'expo-router';
++
++import { hasActiveSession } from '../src/lib/session';
++
++export default function Index(): JSX.Element {
++  const [checking, setChecking] = useState(true);
++  const [authenticated, setAuthenticated] = useState(false);
++
++  useEffect(() => {
++    hasActiveSession()
++      .then(setAuthenticated)
++      .finally(() => setChecking(false));
++  }, []);
++
++  if (checking) {
++    return (
++      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
++        <ActivityIndicator />
++      </View>
++    );
++  }
++
++  return <Redirect href={authenticated ? '/(tabs)' : '/(auth)/login'} />;
++}
+diff --git a/mobile/jest.config.ts b/mobile/jest.config.ts
+index 36b3a52..4380ee8 100644
+--- a/mobile/jest.config.ts
++++ b/mobile/jest.config.ts
+@@ -1,7 +1,6 @@
+ import type { Config } from 'jest';
+ 
+ const config: Config = {
+-  preset: 'jest-expo',
+   testEnvironment: 'node',
+   testMatch: [
+     '**/__tests__/**/*.test.ts',
+@@ -24,6 +23,7 @@ const config: Config = {
+   },
+   moduleNameMapper: {
+     '^@/(.*)$': '<rootDir>/src/$1',
++    '^expo-secure-store$': '<rootDir>/src/__mocks__/expo-secure-store.ts',
+   },
+   collectCoverageFrom: [
+     'src/**/*.ts',
+diff --git a/mobile/package.json b/mobile/package.json
+index 6e8ef15..bf765c3 100644
+--- a/mobile/package.json
++++ b/mobile/package.json
+@@ -22,15 +22,12 @@
+     "@typescript-eslint/eslint-plugin": "8.63.0",
+     "@typescript-eslint/parser": "8.63.0",
+     "axios": "1.16.0",
+-    "bcrypt": "6.0.0",
+-    "bullmq": "5.80.2",
+     "expo": "^57.0.4",
+     "expo-notifications": "^57.0.3",
+     "expo-router": "^57.0.4",
+     "expo-secure-store": "13.0.2",
+     "expo-status-bar": "1.12.1",
+-    "express": "4.22.2",
+-    "react": "18.2.0",
++    "react": "19.2.3",
+     "react-native": "^0.84.1",
+     "react-native-safe-area-context": "4.10.1",
+     "react-native-screens": "3.31.1"
+diff --git a/mobile/src/__mocks__/expo-secure-store.ts b/mobile/src/__mocks__/expo-secure-store.ts
+new file mode 100644
+index 0000000..912e4d3
+--- /dev/null
++++ b/mobile/src/__mocks__/expo-secure-store.ts
+@@ -0,0 +1,3 @@
++export const setItemAsync = jest.fn().mockResolvedValue(undefined);
++export const getItemAsync = jest.fn().mockResolvedValue(null);
++export const deleteItemAsync = jest.fn().mockResolvedValue(undefined);
+diff --git a/mobile/src/index.ts b/mobile/src/index.ts
+deleted file mode 100644
+index a2a57b1..0000000
+--- a/mobile/src/index.ts
++++ /dev/null
+@@ -1,2 +0,0 @@
+-// Mobile app entry — screens and navigation are added in subsequent tasks
+-export {};
+diff --git a/mobile/src/lib/__tests__/session.test.ts b/mobile/src/lib/__tests__/session.test.ts
+new file mode 100644
+index 0000000..73cdcbf
+--- /dev/null
++++ b/mobile/src/lib/__tests__/session.test.ts
+@@ -0,0 +1,37 @@
++import * as SecureStore from 'expo-secure-store';
++
++import { saveSession, getAccessToken, hasActiveSession, clearSession } from '../session';
++
++describe('session storage', () => {
++  afterEach(() => {
++    jest.clearAllMocks();
++  });
++
++  test('saveSession stores both tokens', async () => {
++    await saveSession({ accessToken: 'a', refreshToken: 'r' });
++
++    expect(SecureStore.setItemAsync).toHaveBeenCalledWith('lifetrack.accessToken', 'a');
++    expect(SecureStore.setItemAsync).toHaveBeenCalledWith('lifetrack.refreshToken', 'r');
++  });
++
++  test('hasActiveSession is true when an access token exists', async () => {
++    (SecureStore.getItemAsync as jest.Mock).mockResolvedValue('some-token');
++    await expect(hasActiveSession()).resolves.toBe(true);
++  });
++
++  test('hasActiveSession is false when no access token exists', async () => {
++    (SecureStore.getItemAsync as jest.Mock).mockResolvedValue(null);
++    await expect(hasActiveSession()).resolves.toBe(false);
++  });
++
++  test('getAccessToken returns whatever SecureStore returns', async () => {
++    (SecureStore.getItemAsync as jest.Mock).mockResolvedValue('xyz');
++    await expect(getAccessToken()).resolves.toBe('xyz');
++  });
++
++  test('clearSession deletes both tokens', async () => {
++    await clearSession();
++    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith('lifetrack.accessToken');
++    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith('lifetrack.refreshToken');
++  });
++});
+diff --git a/mobile/src/lib/api.client.ts b/mobile/src/lib/api.client.ts
+new file mode 100644
+index 0000000..22e8dc2
+--- /dev/null
++++ b/mobile/src/lib/api.client.ts
+@@ -0,0 +1,58 @@
++import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
++
++import { getAccessToken, getRefreshToken, saveSession, clearSession } from './session';
++
++const API_BASE_URL = process.env['EXPO_PUBLIC_API_URL'] ?? 'http://localhost:3000';
++
++export const apiClient = axios.create({ baseURL: API_BASE_URL, timeout: 10000 });
++
++apiClient.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
++  const token = await getAccessToken();
++  if (token) {
++    config.headers.set('Authorization', `Bearer ${token}`);
++  }
++  return config;
++});
++
++let refreshPromise: Promise<string | null> | null = null;
++
++async function refreshAccessToken(): Promise<string | null> {
++  const refreshToken = await getRefreshToken();
++  if (!refreshToken) return null;
++
++  try {
++    const { data } = await axios.post(`${API_BASE_URL}/auth/refresh`, { refreshToken });
++    await saveSession(data);
++    return data.accessToken as string;
++  } catch {
++    await clearSession();
++    return null;
++  }
++}
++
++apiClient.interceptors.response.use(
++  (response) => response,
++  async (error: AxiosError) => {
++    const original = error.config as (InternalAxiosRequestConfig & { _retry?: boolean }) | undefined;
++
++    if (error.response?.status === 401 && original && !original._retry) {
++      original._retry = true;
++
++      if (!refreshPromise) {
++        refreshPromise = refreshAccessToken().finally(() => {
++          refreshPromise = null;
++        });
++      }
++
++      const newToken = await refreshPromise;
++      if (newToken) {
++        original.headers.set('Authorization', `Bearer ${newToken}`);
++        return apiClient(original);
++      }
++    }
++
++    return Promise.reject(error);
++  },
++);
++
++export default apiClient;
+diff --git a/mobile/src/lib/queryClient.ts b/mobile/src/lib/queryClient.ts
+new file mode 100644
+index 0000000..40977e3
+--- /dev/null
++++ b/mobile/src/lib/queryClient.ts
+@@ -0,0 +1,10 @@
++import { QueryClient } from '@tanstack/react-query';
++
++export const queryClient = new QueryClient({
++  defaultOptions: {
++    queries: {
++      retry: 1,
++      staleTime: 30_000,
++    },
++  },
++});
+diff --git a/mobile/src/lib/session.ts b/mobile/src/lib/session.ts
+new file mode 100644
+index 0000000..416409c
+--- /dev/null
++++ b/mobile/src/lib/session.ts
+@@ -0,0 +1,36 @@
++import * as SecureStore from 'expo-secure-store';
++
++const ACCESS_TOKEN_KEY = 'lifetrack.accessToken';
++const REFRESH_TOKEN_KEY = 'lifetrack.refreshToken';
++
++export interface SessionTokens {
++  accessToken: string;
++  refreshToken: string;
++}
++
++export async function saveSession(tokens: SessionTokens): Promise<void> {
++  await Promise.all([
++    SecureStore.setItemAsync(ACCESS_TOKEN_KEY, tokens.accessToken),
++    SecureStore.setItemAsync(REFRESH_TOKEN_KEY, tokens.refreshToken),
++  ]);
++}
++
++export async function getAccessToken(): Promise<string | null> {
++  return SecureStore.getItemAsync(ACCESS_TOKEN_KEY);
++}
++
++export async function getRefreshToken(): Promise<string | null> {
++  return SecureStore.getItemAsync(REFRESH_TOKEN_KEY);
++}
++
++export async function hasActiveSession(): Promise<boolean> {
++  const token = await getAccessToken();
++  return token !== null;
++}
++
++export async function clearSession(): Promise<void> {
++  await Promise.all([
++    SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY),
++    SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY),
++  ]);
++}
+diff --git a/mobile/src/screens/DashboardScreen.tsx b/mobile/src/screens/DashboardScreen.tsx
+new file mode 100644
+index 0000000..9a3be4b
+--- /dev/null
++++ b/mobile/src/screens/DashboardScreen.tsx
+@@ -0,0 +1,16 @@
++import { View, Text, StyleSheet } from 'react-native';
++
++export default function DashboardScreen(): JSX.Element {
++  return (
++    <View style={styles.container}>
++      <Text style={styles.title}>Dashboard</Text>
++      <Text style={styles.subtitle}>À implémenter</Text>
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
++  title: { fontSize: 22, fontWeight: '600' },
++  subtitle: { color: '#888' },
++});
+diff --git a/mobile/src/screens/ExportScreen.tsx b/mobile/src/screens/ExportScreen.tsx
+new file mode 100644
+index 0000000..9b5e6f8
+--- /dev/null
++++ b/mobile/src/screens/ExportScreen.tsx
+@@ -0,0 +1,16 @@
++import { View, Text, StyleSheet } from 'react-native';
++
++export default function ExportScreen(): JSX.Element {
++  return (
++    <View style={styles.container}>
++      <Text style={styles.title}>Export</Text>
++      <Text style={styles.subtitle}>À implémenter</Text>
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
++  title: { fontSize: 22, fontWeight: '600' },
++  subtitle: { color: '#888' },
++});
+diff --git a/mobile/src/screens/ForgotPasswordScreen.tsx b/mobile/src/screens/ForgotPasswordScreen.tsx
+new file mode 100644
+index 0000000..ef48344
+--- /dev/null
++++ b/mobile/src/screens/ForgotPasswordScreen.tsx
+@@ -0,0 +1,64 @@
++import { useState } from 'react';
++import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
++import { Link } from 'expo-router';
++import type { AxiosError } from 'axios';
++
++import { apiClient } from '../lib/api.client';
++
++export default function ForgotPasswordScreen(): JSX.Element {
++  const [email, setEmail] = useState('');
++  const [message, setMessage] = useState<string | null>(null);
++  const [error, setError] = useState<string | null>(null);
++  const [loading, setLoading] = useState(false);
++
++  async function handleRequestReset(): Promise<void> {
++    setError(null);
++    setMessage(null);
++    setLoading(true);
++    try {
++      await apiClient.post('/auth/password-reset', { email });
++      setMessage('Si un compte existe pour cet email, un lien de réinitialisation a été envoyé.');
++    } catch (err) {
++      const axiosErr = err as AxiosError<{ message?: string }>;
++      setError(axiosErr.response?.data?.message ?? "La demande n'a pas pu aboutir");
++    } finally {
++      setLoading(false);
++    }
++  }
++
++  return (
++    <View style={styles.container}>
++      <Text style={styles.title}>Mot de passe oublié</Text>
++
++      <TextInput
++        style={styles.input}
++        placeholder="Email"
++        autoCapitalize="none"
++        keyboardType="email-address"
++        value={email}
++        onChangeText={setEmail}
++      />
++      {error && <Text style={styles.error}>{error}</Text>}
++      {message && <Text style={styles.success}>{message}</Text>}
++
++      <Pressable style={styles.button} onPress={handleRequestReset} disabled={loading}>
++        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Envoyer le lien</Text>}
++      </Pressable>
++
++      <Link href="/(auth)/login" style={styles.link}>
++        <Text>Retour à la connexion</Text>
++      </Link>
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { flex: 1, justifyContent: 'center', padding: 24, gap: 12 },
++  title: { fontSize: 24, fontWeight: '600', marginBottom: 16 },
++  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12 },
++  error: { color: '#dc2626', fontSize: 13 },
++  success: { color: '#16a34a', fontSize: 13 },
++  button: { backgroundColor: '#111', borderRadius: 8, padding: 14, alignItems: 'center', marginTop: 8 },
++  buttonText: { color: '#fff', fontWeight: '600' },
++  link: { marginTop: 16, alignSelf: 'center' },
++});
+diff --git a/mobile/src/screens/GoalsScreen.tsx b/mobile/src/screens/GoalsScreen.tsx
+new file mode 100644
+index 0000000..5f87af0
+--- /dev/null
++++ b/mobile/src/screens/GoalsScreen.tsx
+@@ -0,0 +1,16 @@
++import { View, Text, StyleSheet } from 'react-native';
++
++export default function GoalsScreen(): JSX.Element {
++  return (
++    <View style={styles.container}>
++      <Text style={styles.title}>Goals</Text>
++      <Text style={styles.subtitle}>À implémenter</Text>
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
++  title: { fontSize: 22, fontWeight: '600' },
++  subtitle: { color: '#888' },
++});
+diff --git a/mobile/src/screens/InsightsScreen.tsx b/mobile/src/screens/InsightsScreen.tsx
+new file mode 100644
+index 0000000..418d4c7
+--- /dev/null
++++ b/mobile/src/screens/InsightsScreen.tsx
+@@ -0,0 +1,16 @@
++import { View, Text, StyleSheet } from 'react-native';
++
++export default function InsightsScreen(): JSX.Element {
++  return (
++    <View style={styles.container}>
++      <Text style={styles.title}>Insights</Text>
++      <Text style={styles.subtitle}>À implémenter</Text>
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
++  title: { fontSize: 22, fontWeight: '600' },
++  subtitle: { color: '#888' },
++});
+diff --git a/mobile/src/screens/LoginScreen.tsx b/mobile/src/screens/LoginScreen.tsx
+new file mode 100644
+index 0000000..0dfe325
+--- /dev/null
++++ b/mobile/src/screens/LoginScreen.tsx
+@@ -0,0 +1,76 @@
++import { useState } from 'react';
++import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
++import { useRouter, Link } from 'expo-router';
++import type { AxiosError } from 'axios';
++
++import { apiClient } from '../lib/api.client';
++import { saveSession } from '../lib/session';
++
++export default function LoginScreen(): JSX.Element {
++  const router = useRouter();
++  const [email, setEmail] = useState('');
++  const [password, setPassword] = useState('');
++  const [error, setError] = useState<string | null>(null);
++  const [loading, setLoading] = useState(false);
++
++  async function handleLogin(): Promise<void> {
++    setError(null);
++    setLoading(true);
++    try {
++      const { data } = await apiClient.post('/auth/login', { email, password });
++      await saveSession(data);
++      router.replace('/(tabs)');
++    } catch (err) {
++      const axiosErr = err as AxiosError<{ message?: string }>;
++      // Auth_Service intentionally returns a generic message (Req 1.5) —
++      // surfaced as-is, never split into "email" vs "password" fields.
++      setError(axiosErr.response?.data?.message ?? 'Connexion impossible');
++    } finally {
++      setLoading(false);
++    }
++  }
++
++  return (
++    <View style={styles.container}>
++      <Text style={styles.title}>Connexion</Text>
++
++      <TextInput
++        style={styles.input}
++        placeholder="Email"
++        autoCapitalize="none"
++        keyboardType="email-address"
++        value={email}
++        onChangeText={setEmail}
++      />
++      <TextInput
++        style={styles.input}
++        placeholder="Mot de passe"
++        secureTextEntry
++        value={password}
++        onChangeText={setPassword}
++      />
++      {error && <Text style={styles.error}>{error}</Text>}
++
++      <Pressable style={styles.button} onPress={handleLogin} disabled={loading}>
++        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Se connecter</Text>}
++      </Pressable>
++
++      <Link href="/(auth)/forgot-password" style={styles.link}>
++        <Text>Mot de passe oublié ?</Text>
++      </Link>
++      <Link href="/(auth)/register" style={styles.link}>
++        <Text>Créer un compte</Text>
++      </Link>
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { flex: 1, justifyContent: 'center', padding: 24, gap: 12 },
++  title: { fontSize: 24, fontWeight: '600', marginBottom: 16 },
++  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12 },
++  error: { color: '#dc2626', fontSize: 13 },
++  button: { backgroundColor: '#111', borderRadius: 8, padding: 14, alignItems: 'center', marginTop: 8 },
++  buttonText: { color: '#fff', fontWeight: '600' },
++  link: { marginTop: 12, alignSelf: 'center' },
++});
+diff --git a/mobile/src/screens/RegisterScreen.tsx b/mobile/src/screens/RegisterScreen.tsx
+new file mode 100644
+index 0000000..f9838c4
+--- /dev/null
++++ b/mobile/src/screens/RegisterScreen.tsx
+@@ -0,0 +1,83 @@
++import { useState } from 'react';
++import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
++import { useRouter, Link } from 'expo-router';
++import type { AxiosError } from 'axios';
++
++import { apiClient } from '../lib/api.client';
++import { saveSession } from '../lib/session';
++
++interface FieldErrors {
++  email?: string;
++  password?: string;
++}
++
++export default function RegisterScreen(): JSX.Element {
++  const router = useRouter();
++  const [email, setEmail] = useState('');
++  const [password, setPassword] = useState('');
++  const [errors, setErrors] = useState<FieldErrors>({});
++  const [loading, setLoading] = useState(false);
++
++  async function handleRegister(): Promise<void> {
++    setErrors({});
++    setLoading(true);
++    try {
++      const { data } = await apiClient.post('/auth/register', { email, password });
++      await saveSession(data);
++      router.replace('/(tabs)');
++    } catch (err) {
++      const axiosErr = err as AxiosError<{ fields?: FieldErrors; message?: string }>;
++      const fields = axiosErr.response?.data?.fields;
++      if (fields) {
++        setErrors(fields);
++      } else {
++        setErrors({ email: axiosErr.response?.data?.message ?? 'Registration failed' });
++      }
++    } finally {
++      setLoading(false);
++    }
++  }
++
++  return (
++    <View style={styles.container}>
++      <Text style={styles.title}>Créer un compte</Text>
++
++      <TextInput
++        style={styles.input}
++        placeholder="Email"
++        autoCapitalize="none"
++        keyboardType="email-address"
++        value={email}
++        onChangeText={setEmail}
++      />
++      {errors.email && <Text style={styles.error}>{errors.email}</Text>}
++
++      <TextInput
++        style={styles.input}
++        placeholder="Mot de passe (8-128 caractères)"
++        secureTextEntry
++        value={password}
++        onChangeText={setPassword}
++      />
++      {errors.password && <Text style={styles.error}>{errors.password}</Text>}
++
++      <Pressable style={styles.button} onPress={handleRegister} disabled={loading}>
++        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>S'inscrire</Text>}
++      </Pressable>
++
++      <Link href="/(auth)/login" style={styles.link}>
++        <Text>Déjà un compte ? Se connecter</Text>
++      </Link>
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { flex: 1, justifyContent: 'center', padding: 24, gap: 12 },
++  title: { fontSize: 24, fontWeight: '600', marginBottom: 16 },
++  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12 },
++  error: { color: '#dc2626', fontSize: 13 },
++  button: { backgroundColor: '#111', borderRadius: 8, padding: 14, alignItems: 'center', marginTop: 8 },
++  buttonText: { color: '#fff', fontWeight: '600' },
++  link: { marginTop: 16, alignSelf: 'center' },
++});
+diff --git a/mobile/src/screens/SettingsScreen.tsx b/mobile/src/screens/SettingsScreen.tsx
+new file mode 100644
+index 0000000..da7c69d
+--- /dev/null
++++ b/mobile/src/screens/SettingsScreen.tsx
+@@ -0,0 +1,16 @@
++import { View, Text, StyleSheet } from 'react-native';
++
++export default function SettingsScreen(): JSX.Element {
++  return (
++    <View style={styles.container}>
++      <Text style={styles.title}>Settings</Text>
++      <Text style={styles.subtitle}>À implémenter</Text>
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
++  title: { fontSize: 22, fontWeight: '600' },
++  subtitle: { color: '#888' },
++});
+diff --git a/package.json b/package.json
+index f5a39f6..1a3f0c7 100644
+--- a/package.json
++++ b/package.json
+@@ -25,12 +25,5 @@
+   "engines": {
+     "node": ">=20.0.0",
+     "npm": ">=10.0.0"
+-  },
+-  "dependencies": {
+-    "bcrypt": "6.0.0",
+-    "bullmq": "5.80.2",
+-    "expo": "57.0.4",
+-    "express": "4.22.2",
+-    "react-native": "0.84.1"
+   }
+ }

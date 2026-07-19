@@ -25,12 +25,5 @@
   "engines": {
     "node": ">=20.0.0",
     "npm": ">=10.0.0"
-  },
-  "dependencies": {
-    "bcrypt": "6.0.0",
-    "bullmq": "5.80.2",
-    "expo": "57.0.4",
-    "express": "4.22.2",
-    "react-native": "0.84.1"
   }
 }
