@@ -1,0 +1,1097 @@
+diff --git a/mobile/app/_layout.tsx b/mobile/app/_layout.tsx
+index 019d890..92a05e8 100644
+--- a/mobile/app/_layout.tsx
++++ b/mobile/app/_layout.tsx
+@@ -13,6 +13,7 @@ export default function RootLayout(): JSX.Element {
+         <Stack.Screen name="(auth)" />
+         <Stack.Screen name="(tabs)" />
+         <Stack.Screen name="trackers" options={{ headerShown: true }} />
++        <Stack.Screen name="goals" options={{ headerShown: true }} />
+       </Stack>
+     </QueryClientProvider>
+   );
+diff --git a/mobile/app/goals/[id]/edit.tsx b/mobile/app/goals/[id]/edit.tsx
+new file mode 100644
+index 0000000..effcf93
+--- /dev/null
++++ b/mobile/app/goals/[id]/edit.tsx
+@@ -0,0 +1 @@
++export { default } from '../../../src/screens/EditGoalScreen';
+diff --git a/mobile/app/goals/new.tsx b/mobile/app/goals/new.tsx
+new file mode 100644
+index 0000000..965583b
+--- /dev/null
++++ b/mobile/app/goals/new.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/CreateGoalScreen';
+diff --git a/mobile/src/api/exports.ts b/mobile/src/api/exports.ts
+new file mode 100644
+index 0000000..2991763
+--- /dev/null
++++ b/mobile/src/api/exports.ts
+@@ -0,0 +1,54 @@
++import { apiClient } from '../lib/api.client';
++
++export type ExportFormat = 'csv' | 'json';
++
++export interface ExportRequest {
++  format: ExportFormat;
++  trackerId?: string;
++  startDate?: string; // YYYY-MM-DD
++  endDate?: string; // YYYY-MM-DD
++}
++
++export interface ExportResult {
++  jobId: string;
++  status: 'completed';
++  downloadUrl: string;
++  entryCount: number;
++  generatedAt: string;
++}
++
++export interface ExportProcessing {
++  jobId: string;
++  status: 'processing';
++}
++
++export interface ExportJobStatus {
++  jobId: string;
++  status: 'processing' | 'completed' | 'failed';
++  downloadUrl: string | null;
++  entryCount: number | null;
++  errorMessage: string | null;
++  generatedAt: string | null;
++}
++
++/**
++ * Requirements: 10.1, 10.2, 10.3, 10.4
++ *
++ * <= 10,000 matching Entries: resolves already `completed`. More than that:
++ * resolves `processing` — the caller polls `fetchExportJobStatus`.
++ */
++export async function requestExport(req: ExportRequest): Promise<ExportResult | ExportProcessing> {
++  const { data } = await apiClient.post<ExportResult | ExportProcessing>('/exports', req);
++  return data;
++}
++
++export async function fetchExportJobStatus(jobId: string): Promise<ExportJobStatus> {
++  const { data } = await apiClient.get<ExportJobStatus>(`/exports/${jobId}`);
++  return data;
++}
++
++/** `downloadUrl` from the API is a path relative to the API origin. */
++export function resolveDownloadUrl(downloadUrl: string): string {
++  const base = apiClient.defaults.baseURL ?? '';
++  return downloadUrl.startsWith('http') ? downloadUrl : `${base}${downloadUrl}`;
++}
+diff --git a/mobile/src/api/insights.ts b/mobile/src/api/insights.ts
+new file mode 100644
+index 0000000..578df2e
+--- /dev/null
++++ b/mobile/src/api/insights.ts
+@@ -0,0 +1,29 @@
++import { apiClient } from '../lib/api.client';
++
++export type TrendDirection = 'improving' | 'stable' | 'declining';
++
++export interface TrendInsight {
++  id: string;
++  type: 'trend';
++  trackerId: string;
++  direction: TrendDirection;
++  slope: number;
++  generatedAt: string;
++}
++
++export interface CorrelationInsight {
++  id: string;
++  type: 'correlation';
++  trackerIdA: string;
++  trackerIdB: string;
++  pearsonR: number;
++  generatedAt: string;
++}
++
++export type Insight = TrendInsight | CorrelationInsight;
++
++/** Requirements: 9.3 — the API already returns insights ordered by generatedAt DESC. */
++export async function fetchInsights(): Promise<Insight[]> {
++  const { data } = await apiClient.get<Insight[]>('/insights');
++  return data;
++}
+diff --git a/mobile/src/api/trackers.ts b/mobile/src/api/trackers.ts
+index 8d84a7b..1fd5652 100644
+--- a/mobile/src/api/trackers.ts
++++ b/mobile/src/api/trackers.ts
+@@ -126,6 +126,42 @@ export async function fetchGoals(): Promise<GroupedGoals> {
+   return data;
+ }
+ 
++/** No GET /goals/:id endpoint exists — the grouped list is small, so filter client-side. */
++export async function fetchGoal(goalId: string): Promise<Goal> {
++  const grouped = await fetchGoals();
++  const goal = [...grouped.active, ...grouped.completed, ...grouped.expired].find(
++    (g) => g.id === goalId,
++  );
++  if (!goal) {
++    throw new Error(`Goal ${goalId} not found`);
++  }
++  return goal;
++}
++
++export interface CreateGoalRequest {
++  trackerId: string;
++  targetValue: number;
++  direction: 'ascending' | 'descending';
++  deadline: string; // YYYY-MM-DD
++}
++
++export interface UpdateGoalRequest {
++  targetValue?: number;
++  deadline?: string;
++}
++
++/** Requirements: 5.1, 5.2 */
++export async function createGoal(req: CreateGoalRequest): Promise<Goal> {
++  const { data } = await apiClient.post<Goal>('/goals', req);
++  return data;
++}
++
++/** Requirements: 5.8 */
++export async function updateGoal(goalId: string, req: UpdateGoalRequest): Promise<Goal> {
++  const { data } = await apiClient.patch<Goal>(`/goals/${goalId}`, req);
++  return data;
++}
++
+ export interface LogEntryRequest {
+   value: number | boolean | string;
+   note?: string;
+diff --git a/mobile/src/screens/CreateGoalScreen.tsx b/mobile/src/screens/CreateGoalScreen.tsx
+new file mode 100644
+index 0000000..c183c73
+--- /dev/null
++++ b/mobile/src/screens/CreateGoalScreen.tsx
+@@ -0,0 +1,217 @@
++import { useState } from 'react';
++import {
++  View,
++  Text,
++  TextInput,
++  Pressable,
++  ScrollView,
++  ActivityIndicator,
++  StyleSheet,
++} from 'react-native';
++import { useRouter } from 'expo-router';
++import { useQuery, useQueryClient } from '@tanstack/react-query';
++
++import { fetchTrackers, createGoal } from '../api/trackers';
++import type { CreateGoalRequest } from '../api/trackers';
++import { getFieldErrors, getErrorMessage } from '../lib/apiErrors';
++
++function todayLocalDate(): string {
++  const now = new Date();
++  const offsetMs = now.getTimezoneOffset() * 60_000;
++  return new Date(now.getTime() - offsetMs).toISOString().slice(0, 10);
++}
++
++/**
++ * Requirements: 5.1, 5.2
++ */
++export default function CreateGoalScreen(): JSX.Element {
++  const router = useRouter();
++  const queryClient = useQueryClient();
++
++  const { data: trackers, isLoading } = useQuery({
++    queryKey: ['trackers', { includeArchived: false }],
++    queryFn: () => fetchTrackers(),
++  });
++  const numericTrackers = trackers?.filter((t) => t.dataType === 'numeric') ?? [];
++
++  const [trackerId, setTrackerId] = useState<string | null>(null);
++  const [targetValue, setTargetValue] = useState('');
++  const [direction, setDirection] = useState<'ascending' | 'descending'>('ascending');
++  const [deadline, setDeadline] = useState('');
++  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
++  const [topError, setTopError] = useState<string | null>(null);
++  const [submitting, setSubmitting] = useState(false);
++
++  async function handleSubmit(): Promise<void> {
++    setFieldErrors({});
++    setTopError(null);
++
++    const errors: Record<string, string> = {};
++    if (!trackerId) errors['trackerId'] = 'Choisissez un tracker';
++
++    const target = Number(targetValue);
++    if (targetValue === '' || Number.isNaN(target) || target <= 0) {
++      errors['targetValue'] = 'La valeur cible doit être un nombre positif';
++    }
++
++    // Req 16.1: validate the deadline is in the future before submitting.
++    if (!deadline) {
++      errors['deadline'] = 'Choisissez une date limite (AAAA-MM-JJ)';
++    } else if (deadline < todayLocalDate()) {
++      errors['deadline'] = 'La date limite doit être dans le futur';
++    }
++
++    if (Object.keys(errors).length > 0) {
++      setFieldErrors(errors);
++      return;
++    }
++
++    const req: CreateGoalRequest = {
++      trackerId: trackerId!,
++      targetValue: target,
++      direction,
++      deadline,
++    };
++
++    setSubmitting(true);
++    try {
++      await createGoal(req);
++      await queryClient.invalidateQueries({ queryKey: ['goals'] });
++      router.back();
++    } catch (err) {
++      const fields = getFieldErrors(err);
++      if (Object.keys(fields).length > 0) {
++        setFieldErrors(fields);
++      } else {
++        setTopError(getErrorMessage(err, "Impossible de créer l'objectif"));
++      }
++    } finally {
++      setSubmitting(false);
++    }
++  }
++
++  if (isLoading) {
++    return (
++      <View style={styles.centered}>
++        <ActivityIndicator />
++      </View>
++    );
++  }
++
++  return (
++    <ScrollView contentContainerStyle={styles.container}>
++      <Text style={styles.title}>Nouvel objectif</Text>
++
++      {topError && <Text style={styles.error}>{topError}</Text>}
++
++      <Text style={styles.label}>Tracker</Text>
++      {numericTrackers.length === 0 ? (
++        <Text style={styles.hint}>Aucun tracker numérique disponible. Créez-en un d'abord.</Text>
++      ) : (
++        <View style={styles.pickerList}>
++          {numericTrackers.map((t) => (
++            <Pressable
++              key={t.id}
++              style={[styles.pickerRow, trackerId === t.id && styles.pickerRowActive]}
++              onPress={() => setTrackerId(t.id)}
++            >
++              <Text style={[styles.pickerText, trackerId === t.id && styles.pickerTextActive]}>
++                {t.name}
++              </Text>
++            </Pressable>
++          ))}
++        </View>
++      )}
++      {fieldErrors['trackerId'] && <Text style={styles.error}>{fieldErrors['trackerId']}</Text>}
++
++      <Text style={styles.label}>Direction</Text>
++      <View style={styles.segmented}>
++        <Pressable
++          style={[styles.segment, direction === 'ascending' && styles.segmentActive]}
++          onPress={() => setDirection('ascending')}
++        >
++          <Text style={[styles.segmentText, direction === 'ascending' && styles.segmentTextActive]}>
++            Atteindre (monter)
++          </Text>
++        </Pressable>
++        <Pressable
++          style={[styles.segment, direction === 'descending' && styles.segmentActive]}
++          onPress={() => setDirection('descending')}
++        >
++          <Text
++            style={[styles.segmentText, direction === 'descending' && styles.segmentTextActive]}
++          >
++            Descendre à
++          </Text>
++        </Pressable>
++      </View>
++
++      <Text style={styles.label}>Valeur cible</Text>
++      <TextInput
++        style={styles.input}
++        value={targetValue}
++        onChangeText={setTargetValue}
++        keyboardType="numeric"
++        placeholder="ex. 10"
++      />
++      {fieldErrors['targetValue'] && <Text style={styles.error}>{fieldErrors['targetValue']}</Text>}
++
++      <Text style={styles.label}>Date limite (AAAA-MM-JJ)</Text>
++      <TextInput
++        style={styles.input}
++        value={deadline}
++        onChangeText={setDeadline}
++        placeholder={todayLocalDate()}
++        autoCapitalize="none"
++      />
++      {fieldErrors['deadline'] && <Text style={styles.error}>{fieldErrors['deadline']}</Text>}
++
++      <Pressable
++        style={styles.submitButton}
++        onPress={() => void handleSubmit()}
++        disabled={submitting}
++      >
++        {submitting ? (
++          <ActivityIndicator color="#fff" />
++        ) : (
++          <Text style={styles.submitButtonText}>Créer l'objectif</Text>
++        )}
++      </Pressable>
++    </ScrollView>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { padding: 20, paddingBottom: 48 },
++  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
++  title: { fontSize: 22, fontWeight: '600', marginBottom: 16 },
++  label: { fontSize: 14, fontWeight: '600', marginTop: 16, marginBottom: 6 },
++  hint: { color: '#888', fontSize: 13 },
++  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12 },
++  error: { color: '#dc2626', fontSize: 13, marginTop: 4 },
++  pickerList: { gap: 8 },
++  pickerRow: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12 },
++  pickerRowActive: { backgroundColor: '#111', borderColor: '#111' },
++  pickerText: { fontSize: 14, color: '#111' },
++  pickerTextActive: { color: '#fff', fontWeight: '600' },
++  segmented: { flexDirection: 'row', gap: 8 },
++  segment: {
++    flex: 1,
++    borderWidth: 1,
++    borderColor: '#ccc',
++    borderRadius: 8,
++    paddingVertical: 10,
++    alignItems: 'center',
++  },
++  segmentActive: { backgroundColor: '#111', borderColor: '#111' },
++  segmentText: { fontSize: 13, color: '#111' },
++  segmentTextActive: { color: '#fff', fontWeight: '600' },
++  submitButton: {
++    backgroundColor: '#111',
++    borderRadius: 8,
++    padding: 14,
++    alignItems: 'center',
++    marginTop: 28,
++  },
++  submitButtonText: { color: '#fff', fontWeight: '600' },
++});
+diff --git a/mobile/src/screens/EditGoalScreen.tsx b/mobile/src/screens/EditGoalScreen.tsx
+new file mode 100644
+index 0000000..8c2c262
+--- /dev/null
++++ b/mobile/src/screens/EditGoalScreen.tsx
+@@ -0,0 +1,156 @@
++import { useEffect, useState } from 'react';
++import {
++  View,
++  Text,
++  TextInput,
++  Pressable,
++  ScrollView,
++  ActivityIndicator,
++  StyleSheet,
++} from 'react-native';
++import { useRouter, useLocalSearchParams } from 'expo-router';
++import { useQuery, useQueryClient } from '@tanstack/react-query';
++
++import { fetchGoal, updateGoal } from '../api/trackers';
++import type { UpdateGoalRequest } from '../api/trackers';
++import { getFieldErrors, getErrorMessage } from '../lib/apiErrors';
++
++function todayLocalDate(): string {
++  const now = new Date();
++  const offsetMs = now.getTimezoneOffset() * 60_000;
++  return new Date(now.getTime() - offsetMs).toISOString().slice(0, 10);
++}
++
++/**
++ * Requirements: 5.8
++ */
++export default function EditGoalScreen(): JSX.Element {
++  const router = useRouter();
++  const queryClient = useQueryClient();
++  const { id } = useLocalSearchParams<{ id: string }>();
++  const goalId = id;
++
++  const { data: goal, isLoading } = useQuery({
++    queryKey: ['goal', goalId],
++    queryFn: () => fetchGoal(goalId),
++  });
++
++  const [targetValue, setTargetValue] = useState('');
++  const [deadline, setDeadline] = useState('');
++  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
++  const [topError, setTopError] = useState<string | null>(null);
++  const [submitting, setSubmitting] = useState(false);
++
++  useEffect(() => {
++    if (goal) {
++      setTargetValue(String(goal.targetValue));
++      setDeadline(goal.deadline);
++    }
++  }, [goal]);
++
++  async function handleSubmit(): Promise<void> {
++    setFieldErrors({});
++    setTopError(null);
++
++    const errors: Record<string, string> = {};
++    const target = Number(targetValue);
++    if (targetValue === '' || Number.isNaN(target) || target <= 0) {
++      errors['targetValue'] = 'La valeur cible doit être un nombre positif';
++    }
++    if (!deadline) {
++      errors['deadline'] = 'Choisissez une date limite (AAAA-MM-JJ)';
++    } else if (deadline < todayLocalDate()) {
++      errors['deadline'] = 'La date limite doit être dans le futur';
++    }
++
++    if (Object.keys(errors).length > 0) {
++      setFieldErrors(errors);
++      return;
++    }
++
++    const req: UpdateGoalRequest = { targetValue: target, deadline };
++
++    setSubmitting(true);
++    try {
++      await updateGoal(goalId, req);
++      await Promise.all([
++        queryClient.invalidateQueries({ queryKey: ['goals'] }),
++        queryClient.invalidateQueries({ queryKey: ['goal', goalId] }),
++        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
++      ]);
++      router.back();
++    } catch (err) {
++      const fields = getFieldErrors(err);
++      if (Object.keys(fields).length > 0) {
++        setFieldErrors(fields);
++      } else {
++        setTopError(getErrorMessage(err, "Impossible de mettre à jour l'objectif"));
++      }
++    } finally {
++      setSubmitting(false);
++    }
++  }
++
++  if (isLoading || !goal) {
++    return (
++      <View style={styles.centered}>
++        <ActivityIndicator />
++      </View>
++    );
++  }
++
++  return (
++    <ScrollView contentContainerStyle={styles.container}>
++      <Text style={styles.title}>Modifier l'objectif</Text>
++
++      {topError && <Text style={styles.error}>{topError}</Text>}
++
++      <Text style={styles.label}>Valeur cible</Text>
++      <TextInput
++        style={styles.input}
++        value={targetValue}
++        onChangeText={setTargetValue}
++        keyboardType="numeric"
++      />
++      {fieldErrors['targetValue'] && <Text style={styles.error}>{fieldErrors['targetValue']}</Text>}
++
++      <Text style={styles.label}>Date limite (AAAA-MM-JJ)</Text>
++      <TextInput
++        style={styles.input}
++        value={deadline}
++        onChangeText={setDeadline}
++        autoCapitalize="none"
++      />
++      {fieldErrors['deadline'] && <Text style={styles.error}>{fieldErrors['deadline']}</Text>}
++
++      <Pressable
++        style={styles.submitButton}
++        onPress={() => void handleSubmit()}
++        disabled={submitting}
++      >
++        {submitting ? (
++          <ActivityIndicator color="#fff" />
++        ) : (
++          <Text style={styles.submitButtonText}>Enregistrer</Text>
++        )}
++      </Pressable>
++    </ScrollView>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { padding: 20, paddingBottom: 48 },
++  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
++  title: { fontSize: 22, fontWeight: '600', marginBottom: 16 },
++  label: { fontSize: 14, fontWeight: '600', marginTop: 16, marginBottom: 6 },
++  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12 },
++  error: { color: '#dc2626', fontSize: 13, marginTop: 4 },
++  submitButton: {
++    backgroundColor: '#111',
++    borderRadius: 8,
++    padding: 14,
++    alignItems: 'center',
++    marginTop: 28,
++  },
++  submitButtonText: { color: '#fff', fontWeight: '600' },
++});
+diff --git a/mobile/src/screens/ExportScreen.tsx b/mobile/src/screens/ExportScreen.tsx
+index 9b5e6f8..b292843 100644
+--- a/mobile/src/screens/ExportScreen.tsx
++++ b/mobile/src/screens/ExportScreen.tsx
+@@ -1,16 +1,249 @@
+-import { View, Text, StyleSheet } from 'react-native';
++import { useEffect, useRef, useState } from 'react';
++import {
++  View,
++  Text,
++  TextInput,
++  Pressable,
++  ScrollView,
++  ActivityIndicator,
++  Linking,
++  StyleSheet,
++} from 'react-native';
++import { useQuery } from '@tanstack/react-query';
+ 
++import { fetchTrackers } from '../api/trackers';
++import { requestExport, fetchExportJobStatus, resolveDownloadUrl } from '../api/exports';
++import type { ExportFormat, ExportJobStatus } from '../api/exports';
++import { getErrorMessage } from '../lib/apiErrors';
++
++const POLL_INTERVAL_MS = 2000;
++
++type ScreenState =
++  | { phase: 'idle' }
++  | { phase: 'processing' }
++  | { phase: 'empty' }
++  | { phase: 'done'; downloadUrl: string; entryCount: number }
++  | { phase: 'error'; message: string };
++
++/**
++ * Requirements: 10.1, 10.2, 10.3, 10.4, 10.6, 10.8, 10.9
++ */
+ export default function ExportScreen(): JSX.Element {
++  const { data: trackers } = useQuery({
++    queryKey: ['trackers', { includeArchived: false }],
++    queryFn: () => fetchTrackers(),
++  });
++
++  const [format, setFormat] = useState<ExportFormat>('csv');
++  const [trackerId, setTrackerId] = useState<string | null>(null);
++  const [startDate, setStartDate] = useState('');
++  const [endDate, setEndDate] = useState('');
++  const [state, setState] = useState<ScreenState>({ phase: 'idle' });
++
++  const pollHandle = useRef<ReturnType<typeof setInterval> | null>(null);
++
++  useEffect(() => {
++    return () => {
++      if (pollHandle.current) clearInterval(pollHandle.current);
++    };
++  }, []);
++
++  function pollJob(jobId: string): void {
++    pollHandle.current = setInterval(() => {
++      void (async () => {
++        try {
++          const status: ExportJobStatus = await fetchExportJobStatus(jobId);
++          if (status.status === 'processing') return;
++
++          if (pollHandle.current) clearInterval(pollHandle.current);
++
++          if (status.status === 'failed') {
++            setState({ phase: 'error', message: status.errorMessage ?? "L'export a échoué" });
++            return;
++          }
++
++          if (status.entryCount === 0) {
++            setState({ phase: 'empty' });
++            return;
++          }
++
++          setState({
++            phase: 'done',
++            downloadUrl: status.downloadUrl ?? '',
++            entryCount: status.entryCount ?? 0,
++          });
++        } catch (err) {
++          if (pollHandle.current) clearInterval(pollHandle.current);
++          setState({ phase: 'error', message: getErrorMessage(err, "L'export a échoué") });
++        }
++      })();
++    }, POLL_INTERVAL_MS);
++  }
++
++  async function handleExport(): Promise<void> {
++    setState({ phase: 'processing' });
++    try {
++      const result = await requestExport({
++        format,
++        ...(trackerId ? { trackerId } : {}),
++        ...(startDate ? { startDate } : {}),
++        ...(endDate ? { endDate } : {}),
++      });
++
++      if (result.status === 'processing') {
++        // Req 10.4: large exports (>10k entries) are processed asynchronously.
++        pollJob(result.jobId);
++        return;
++      }
++
++      if (result.entryCount === 0) {
++        // Req 10.8: filter matched nothing.
++        setState({ phase: 'empty' });
++        return;
++      }
++
++      setState({ phase: 'done', downloadUrl: result.downloadUrl, entryCount: result.entryCount });
++    } catch (err) {
++      setState({ phase: 'error', message: getErrorMessage(err, "L'export a échoué") });
++    }
++  }
++
++  const submitting = state.phase === 'processing';
++
+   return (
+-    <View style={styles.container}>
+-      <Text style={styles.title}>Export</Text>
+-      <Text style={styles.subtitle}>À implémenter</Text>
+-    </View>
++    <ScrollView contentContainerStyle={styles.container}>
++      <Text style={styles.title}>Exporter mes données</Text>
++
++      <Text style={styles.label}>Format</Text>
++      <View style={styles.segmented}>
++        {(['csv', 'json'] as const).map((option) => (
++          <Pressable
++            key={option}
++            style={[styles.segment, format === option && styles.segmentActive]}
++            onPress={() => setFormat(option)}
++          >
++            <Text style={[styles.segmentText, format === option && styles.segmentTextActive]}>
++              {option.toUpperCase()}
++            </Text>
++          </Pressable>
++        ))}
++      </View>
++
++      <Text style={styles.label}>Tracker</Text>
++      <View style={styles.pickerList}>
++        <Pressable
++          style={[styles.pickerRow, trackerId === null && styles.pickerRowActive]}
++          onPress={() => setTrackerId(null)}
++        >
++          <Text style={[styles.pickerText, trackerId === null && styles.pickerTextActive]}>
++            Tous les trackers
++          </Text>
++        </Pressable>
++        {(trackers ?? []).map((t) => (
++          <Pressable
++            key={t.id}
++            style={[styles.pickerRow, trackerId === t.id && styles.pickerRowActive]}
++            onPress={() => setTrackerId(t.id)}
++          >
++            <Text style={[styles.pickerText, trackerId === t.id && styles.pickerTextActive]}>
++              {t.name}
++            </Text>
++          </Pressable>
++        ))}
++      </View>
++
++      <Text style={styles.label}>Du (AAAA-MM-JJ, optionnel)</Text>
++      <TextInput
++        style={styles.input}
++        value={startDate}
++        onChangeText={setStartDate}
++        autoCapitalize="none"
++      />
++
++      <Text style={styles.label}>Au (AAAA-MM-JJ, optionnel)</Text>
++      <TextInput
++        style={styles.input}
++        value={endDate}
++        onChangeText={setEndDate}
++        autoCapitalize="none"
++      />
++
++      <Pressable
++        style={styles.submitButton}
++        onPress={() => void handleExport()}
++        disabled={submitting}
++      >
++        {submitting ? (
++          <ActivityIndicator color="#fff" />
++        ) : (
++          <Text style={styles.submitButtonText}>Exporter</Text>
++        )}
++      </Pressable>
++
++      {state.phase === 'processing' && (
++        <Text style={styles.hint}>
++          Export volumineux en cours de traitement — cela peut prendre jusqu'à 60 secondes.
++        </Text>
++      )}
++      {state.phase === 'empty' && (
++        <Text style={styles.hint}>Aucune donnée ne correspond à ce filtre.</Text>
++      )}
++      {state.phase === 'error' && <Text style={styles.error}>{state.message}</Text>}
++      {state.phase === 'done' && (
++        <View style={styles.resultCard}>
++          <Text style={styles.resultText}>{state.entryCount} entrées prêtes.</Text>
++          <Pressable
++            style={styles.downloadButton}
++            onPress={() => void Linking.openURL(resolveDownloadUrl(state.downloadUrl))}
++          >
++            <Text style={styles.downloadButtonText}>Ouvrir / Télécharger</Text>
++          </Pressable>
++        </View>
++      )}
++    </ScrollView>
+   );
+ }
+ 
+ const styles = StyleSheet.create({
+-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
+-  title: { fontSize: 22, fontWeight: '600' },
+-  subtitle: { color: '#888' },
++  container: { padding: 20, paddingBottom: 48 },
++  title: { fontSize: 22, fontWeight: '600', marginBottom: 16 },
++  label: { fontSize: 14, fontWeight: '600', marginTop: 16, marginBottom: 6 },
++  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12 },
++  segmented: { flexDirection: 'row', gap: 8 },
++  segment: {
++    flex: 1,
++    borderWidth: 1,
++    borderColor: '#ccc',
++    borderRadius: 8,
++    paddingVertical: 10,
++    alignItems: 'center',
++  },
++  segmentActive: { backgroundColor: '#111', borderColor: '#111' },
++  segmentText: { fontSize: 13, color: '#111' },
++  segmentTextActive: { color: '#fff', fontWeight: '600' },
++  pickerList: { gap: 8, maxHeight: 240 },
++  pickerRow: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12 },
++  pickerRowActive: { backgroundColor: '#111', borderColor: '#111' },
++  pickerText: { fontSize: 14, color: '#111' },
++  pickerTextActive: { color: '#fff', fontWeight: '600' },
++  submitButton: {
++    backgroundColor: '#111',
++    borderRadius: 8,
++    padding: 14,
++    alignItems: 'center',
++    marginTop: 28,
++  },
++  submitButtonText: { color: '#fff', fontWeight: '600' },
++  hint: { color: '#666', fontSize: 13, marginTop: 16, textAlign: 'center' },
++  error: { color: '#dc2626', fontSize: 13, marginTop: 16, textAlign: 'center' },
++  resultCard: { marginTop: 20, alignItems: 'center', gap: 12 },
++  resultText: { fontSize: 14, color: '#444' },
++  downloadButton: {
++    borderWidth: 1,
++    borderColor: '#111',
++    borderRadius: 8,
++    paddingHorizontal: 20,
++    paddingVertical: 12,
++  },
++  downloadButtonText: { color: '#111', fontWeight: '600' },
+ });
+diff --git a/mobile/src/screens/GoalsScreen.tsx b/mobile/src/screens/GoalsScreen.tsx
+index 5f87af0..93f15aa 100644
+--- a/mobile/src/screens/GoalsScreen.tsx
++++ b/mobile/src/screens/GoalsScreen.tsx
+@@ -1,16 +1,136 @@
+-import { View, Text, StyleSheet } from 'react-native';
++import { View, Text, SectionList, Pressable, ActivityIndicator, StyleSheet } from 'react-native';
++import { useRouter } from 'expo-router';
++import { useQuery } from '@tanstack/react-query';
+ 
++import { fetchGoals, fetchTrackers } from '../api/trackers';
++import type { Goal } from '../api/trackers';
++
++const SECTION_TITLES: Record<'active' | 'completed' | 'expired', string> = {
++  active: 'En cours',
++  completed: 'Atteints',
++  expired: 'Expirés',
++};
++
++/**
++ * Requirements: 5.1, 5.7
++ */
+ export default function GoalsScreen(): JSX.Element {
++  const router = useRouter();
++
++  const { data: grouped, isLoading: loadingGoals } = useQuery({
++    queryKey: ['goals'],
++    queryFn: fetchGoals,
++  });
++  const { data: trackers, isLoading: loadingTrackers } = useQuery({
++    queryKey: ['trackers', { includeArchived: true }],
++    queryFn: () => fetchTrackers({ includeArchived: true }),
++  });
++
++  if (loadingGoals || loadingTrackers) {
++    return (
++      <View style={styles.centered}>
++        <ActivityIndicator />
++      </View>
++    );
++  }
++
++  const trackerName = (trackerId: string): string =>
++    trackers?.find((t) => t.id === trackerId)?.name ?? 'Tracker';
++
++  const sections = (['active', 'completed', 'expired'] as const)
++    .map((key) => ({ key, title: SECTION_TITLES[key], data: grouped?.[key] ?? [] }))
++    .filter((section) => section.data.length > 0);
++
+   return (
+     <View style={styles.container}>
+-      <Text style={styles.title}>Goals</Text>
+-      <Text style={styles.subtitle}>À implémenter</Text>
++      <View style={styles.header}>
++        <Pressable style={styles.addButton} onPress={() => router.push('/goals/new')}>
++          <Text style={styles.addButtonText}>+ Nouvel objectif</Text>
++        </Pressable>
++      </View>
++
++      <SectionList
++        sections={sections}
++        keyExtractor={(item) => item.id}
++        contentContainerStyle={styles.list}
++        renderSectionHeader={({ section }) => (
++          <Text style={styles.sectionTitle}>{section.title}</Text>
++        )}
++        ListEmptyComponent={
++          <View style={styles.centered}>
++            <Text style={styles.emptyText}>Aucun objectif pour l'instant</Text>
++          </View>
++        }
++        renderItem={({ item }) => (
++          <GoalRow
++            goal={item}
++            trackerName={trackerName(item.trackerId)}
++            onPress={() =>
++              item.status === 'active' ? router.push(`/goals/${item.id}/edit`) : undefined
++            }
++          />
++        )}
++      />
+     </View>
+   );
+ }
+ 
++function GoalRow({
++  goal,
++  trackerName,
++  onPress,
++}: {
++  goal: Goal;
++  trackerName: string;
++  onPress?: () => void;
++}): JSX.Element {
++  return (
++    <Pressable style={styles.row} onPress={onPress} disabled={goal.status !== 'active'}>
++      <View style={styles.rowMain}>
++        <Text style={styles.rowName}>{trackerName}</Text>
++        <Text style={styles.rowMeta}>
++          {goal.direction === 'ascending' ? 'Atteindre' : 'Descendre à'} {goal.targetValue} avant le{' '}
++          {goal.deadline}
++        </Text>
++      </View>
++      <View style={styles.progressTrack}>
++        <View
++          style={[
++            styles.progressFill,
++            { width: `${Math.min(100, Math.max(0, goal.progressPct))}%` },
++          ]}
++        />
++      </View>
++      <Text style={styles.progressLabel}>{Math.round(goal.progressPct)}%</Text>
++    </Pressable>
++  );
++}
++
+ const styles = StyleSheet.create({
+-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
+-  title: { fontSize: 22, fontWeight: '600' },
+-  subtitle: { color: '#888' },
++  container: { flex: 1 },
++  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
++  header: { padding: 16, alignItems: 'flex-end' },
++  addButton: {
++    backgroundColor: '#111',
++    borderRadius: 8,
++    paddingHorizontal: 14,
++    paddingVertical: 8,
++  },
++  addButtonText: { color: '#fff', fontWeight: '600' },
++  list: { paddingHorizontal: 16, paddingBottom: 24 },
++  emptyText: { color: '#888' },
++  sectionTitle: { fontSize: 13, fontWeight: '700', color: '#888', marginTop: 16, marginBottom: 8 },
++  row: {
++    borderWidth: 1,
++    borderColor: '#e5e5e5',
++    borderRadius: 10,
++    padding: 14,
++    marginBottom: 8,
++  },
++  rowMain: { marginBottom: 8 },
++  rowName: { fontSize: 16, fontWeight: '600' },
++  rowMeta: { fontSize: 13, color: '#888', marginTop: 2 },
++  progressTrack: { height: 6, borderRadius: 3, backgroundColor: '#eee', overflow: 'hidden' },
++  progressFill: { height: '100%', backgroundColor: '#111' },
++  progressLabel: { fontSize: 12, color: '#666', marginTop: 4, textAlign: 'right' },
+ });
+diff --git a/mobile/src/screens/InsightsScreen.tsx b/mobile/src/screens/InsightsScreen.tsx
+index 418d4c7..bdd5700 100644
+--- a/mobile/src/screens/InsightsScreen.tsx
++++ b/mobile/src/screens/InsightsScreen.tsx
+@@ -1,16 +1,123 @@
+-import { View, Text, StyleSheet } from 'react-native';
++import { View, Text, FlatList, ActivityIndicator, StyleSheet } from 'react-native';
++import { useQuery } from '@tanstack/react-query';
+ 
++import { fetchInsights } from '../api/insights';
++import type { Insight, TrendDirection } from '../api/insights';
++import { fetchTrackers } from '../api/trackers';
++
++const MIN_ENTRIES_FOR_TREND = 14;
++
++const TREND_LABEL: Record<TrendDirection, string> = {
++  improving: '📈 En amélioration',
++  stable: '➡️ Stable',
++  declining: '📉 En baisse',
++};
++
++/**
++ * Requirements: 9.3, 9.6
++ */
+ export default function InsightsScreen(): JSX.Element {
++  const { data: insights, isLoading: loadingInsights } = useQuery({
++    queryKey: ['insights'],
++    queryFn: fetchInsights,
++  });
++  const { data: trackers, isLoading: loadingTrackers } = useQuery({
++    queryKey: ['trackers', { includeArchived: false }],
++    queryFn: () => fetchTrackers(),
++  });
++
++  if (loadingInsights || loadingTrackers) {
++    return (
++      <View style={styles.centered}>
++        <ActivityIndicator />
++      </View>
++    );
++  }
++
++  const trackerName = (trackerId: string): string =>
++    trackers?.find((t) => t.id === trackerId)?.name ?? 'Tracker';
++
++  // Req 9.3: the API already returns insights ordered by generatedAt DESC.
++  const sortedInsights = [...(insights ?? [])].sort((a, b) =>
++    a.generatedAt < b.generatedAt ? 1 : -1,
++  );
++
++  // Req 9.6: a numeric tracker with no trend insight yet hasn't reached the
++  // 14-entry threshold on the backend — surface that explicitly rather than
++  // silently omitting it. (Trend insights only exist for numeric trackers.)
++  const trackersMissingTrend = (trackers ?? []).filter(
++    (t) =>
++      t.dataType === 'numeric' &&
++      !sortedInsights.some((i) => i.type === 'trend' && i.trackerId === t.id),
++  );
++
++  return (
++    <FlatList
++      data={sortedInsights}
++      keyExtractor={(item) => item.id}
++      contentContainerStyle={styles.list}
++      ListEmptyComponent={
++        <View style={styles.centered}>
++          <Text style={styles.emptyText}>Aucun insight généré pour l'instant</Text>
++        </View>
++      }
++      renderItem={({ item }) => <InsightRow insight={item} trackerName={trackerName} />}
++      ListFooterComponent={
++        trackersMissingTrend.length > 0 ? (
++          <View style={styles.footer}>
++            <Text style={styles.footerTitle}>Pas encore assez de données</Text>
++            {trackersMissingTrend.map((t) => (
++              <Text key={t.id} style={styles.footerRow}>
++                {t.name} — {MIN_ENTRIES_FOR_TREND} entrées minimum nécessaires pour une tendance
++              </Text>
++            ))}
++          </View>
++        ) : null
++      }
++    />
++  );
++}
++
++function InsightRow({
++  insight,
++  trackerName,
++}: {
++  insight: Insight;
++  trackerName: (id: string) => string;
++}): JSX.Element {
++  if (insight.type === 'trend') {
++    return (
++      <View style={styles.card}>
++        <Text style={styles.cardTitle}>{trackerName(insight.trackerId)}</Text>
++        <Text style={styles.cardBody}>{TREND_LABEL[insight.direction]}</Text>
++      </View>
++    );
++  }
++
+   return (
+-    <View style={styles.container}>
+-      <Text style={styles.title}>Insights</Text>
+-      <Text style={styles.subtitle}>À implémenter</Text>
++    <View style={styles.card}>
++      <Text style={styles.cardTitle}>
++        {trackerName(insight.trackerIdA)} ↔ {trackerName(insight.trackerIdB)}
++      </Text>
++      <Text style={styles.cardBody}>Corrélation : {insight.pearsonR.toFixed(2)}</Text>
+     </View>
+   );
+ }
+ 
+ const styles = StyleSheet.create({
+-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
+-  title: { fontSize: 22, fontWeight: '600' },
+-  subtitle: { color: '#888' },
++  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
++  list: { padding: 16 },
++  emptyText: { color: '#888' },
++  card: {
++    borderWidth: 1,
++    borderColor: '#e5e5e5',
++    borderRadius: 10,
++    padding: 14,
++    marginBottom: 8,
++  },
++  cardTitle: { fontSize: 16, fontWeight: '600' },
++  cardBody: { fontSize: 14, color: '#666', marginTop: 4 },
++  footer: { marginTop: 8 },
++  footerTitle: { fontSize: 13, fontWeight: '700', color: '#888', marginBottom: 8 },
++  footerRow: { fontSize: 13, color: '#999', marginBottom: 6 },
+ });

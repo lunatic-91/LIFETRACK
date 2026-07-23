@@ -126,6 +126,42 @@ export async function fetchGoals(): Promise<GroupedGoals> {
   return data;
 }
 
+/** No GET /goals/:id endpoint exists — the grouped list is small, so filter client-side. */
+export async function fetchGoal(goalId: string): Promise<Goal> {
+  const grouped = await fetchGoals();
+  const goal = [...grouped.active, ...grouped.completed, ...grouped.expired].find(
+    (g) => g.id === goalId,
+  );
+  if (!goal) {
+    throw new Error(`Goal ${goalId} not found`);
+  }
+  return goal;
+}
+
+export interface CreateGoalRequest {
+  trackerId: string;
+  targetValue: number;
+  direction: 'ascending' | 'descending';
+  deadline: string; // YYYY-MM-DD
+}
+
+export interface UpdateGoalRequest {
+  targetValue?: number;
+  deadline?: string;
+}
+
+/** Requirements: 5.1, 5.2 */
+export async function createGoal(req: CreateGoalRequest): Promise<Goal> {
+  const { data } = await apiClient.post<Goal>('/goals', req);
+  return data;
+}
+
+/** Requirements: 5.8 */
+export async function updateGoal(goalId: string, req: UpdateGoalRequest): Promise<Goal> {
+  const { data } = await apiClient.patch<Goal>(`/goals/${goalId}`, req);
+  return data;
+}
+
 export interface LogEntryRequest {
   value: number | boolean | string;
   note?: string;
