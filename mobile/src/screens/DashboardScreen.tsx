@@ -1,4 +1,12 @@
-import { View, Text, FlatList, ActivityIndicator, StyleSheet, RefreshControl, Pressable } from 'react-native';
+import {
+  View,
+  Text,
+  FlatList,
+  ActivityIndicator,
+  StyleSheet,
+  RefreshControl,
+  Pressable,
+} from 'react-native';
 import { useRouter } from 'expo-router';
 
 import { useDashboardData } from '../hooks/useDashboardData';
@@ -29,7 +37,7 @@ export default function DashboardScreen(): JSX.Element {
     return (
       <View style={styles.centered}>
         <Text style={styles.emptyTitle}>Aucun tracker pour l'instant</Text>
-        <Pressable style={styles.cta} onPress={() => router.push('/(tabs)/settings')}>
+        <Pressable style={styles.cta} onPress={() => router.push('/trackers/new')}>
           <Text style={styles.ctaText}>Créer mon premier tracker</Text>
         </Pressable>
       </View>
@@ -41,7 +49,7 @@ export default function DashboardScreen(): JSX.Element {
       data={cards}
       keyExtractor={(item) => item.tracker.id}
       contentContainerStyle={styles.list}
-      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
+      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} />}
       ListHeaderComponent={
         <>
           {moodTracker && typeof moodTracker.latestEntryValue === 'number' && (
@@ -51,7 +59,9 @@ export default function DashboardScreen(): JSX.Element {
           {energyTracker && <EnergyTrendChart energyTrackerId={energyTracker.tracker.id} />}
         </>
       }
-      renderItem={({ item }) => <TrackerCard data={item} />}
+      renderItem={({ item }) => (
+        <TrackerCard data={item} onPress={() => router.push(`/trackers/${item.tracker.id}/log`)} />
+      )}
     />
   );
 }

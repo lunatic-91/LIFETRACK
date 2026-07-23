@@ -1,0 +1,1402 @@
+diff --git a/mobile/app/_layout.tsx b/mobile/app/_layout.tsx
+index abe3cb4..019d890 100644
+--- a/mobile/app/_layout.tsx
++++ b/mobile/app/_layout.tsx
+@@ -12,6 +12,7 @@ export default function RootLayout(): JSX.Element {
+         <Stack.Screen name="index" />
+         <Stack.Screen name="(auth)" />
+         <Stack.Screen name="(tabs)" />
++        <Stack.Screen name="trackers" options={{ headerShown: true }} />
+       </Stack>
+     </QueryClientProvider>
+   );
+diff --git a/mobile/app/trackers/[id]/edit.tsx b/mobile/app/trackers/[id]/edit.tsx
+new file mode 100644
+index 0000000..df1cf87
+--- /dev/null
++++ b/mobile/app/trackers/[id]/edit.tsx
+@@ -0,0 +1 @@
++export { default } from '../../../src/screens/EditTrackerScreen';
+diff --git a/mobile/app/trackers/[id]/log.tsx b/mobile/app/trackers/[id]/log.tsx
+new file mode 100644
+index 0000000..702fbdd
+--- /dev/null
++++ b/mobile/app/trackers/[id]/log.tsx
+@@ -0,0 +1 @@
++export { default } from '../../../src/screens/LogEntryScreen';
+diff --git a/mobile/app/trackers/index.tsx b/mobile/app/trackers/index.tsx
+new file mode 100644
+index 0000000..fa4a1de
+--- /dev/null
++++ b/mobile/app/trackers/index.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/TrackerListScreen';
+diff --git a/mobile/app/trackers/new.tsx b/mobile/app/trackers/new.tsx
+new file mode 100644
+index 0000000..a1219e0
+--- /dev/null
++++ b/mobile/app/trackers/new.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/CreateTrackerScreen';
+diff --git a/mobile/src/api/trackers.ts b/mobile/src/api/trackers.ts
+index 9c1f1f4..8d84a7b 100644
+--- a/mobile/src/api/trackers.ts
++++ b/mobile/src/api/trackers.ts
+@@ -47,11 +47,67 @@ export interface GroupedGoals {
+   expired: Goal[];
+ }
+ 
+-export async function fetchTrackers(): Promise<Tracker[]> {
+-  const { data } = await apiClient.get<Tracker[]>('/trackers');
++export async function fetchTrackers(
++  params: { includeArchived?: boolean } = {},
++): Promise<Tracker[]> {
++  const { data } = await apiClient.get<Tracker[]>('/trackers', {
++    params: params.includeArchived ? { includeArchived: 'true' } : undefined,
++  });
+   return data;
+ }
+ 
++export async function fetchTracker(trackerId: string): Promise<Tracker> {
++  // No single-tracker GET endpoint exists yet; the list is small (≤ 50) so
++  // filtering client-side avoids adding a new API surface just for this.
++  const trackers = await fetchTrackers({ includeArchived: true });
++  const tracker = trackers.find((t) => t.id === trackerId);
++  if (!tracker) {
++    throw new Error(`Tracker ${trackerId} not found`);
++  }
++  return tracker;
++}
++
++export interface CreateTrackerRequest {
++  name: string;
++  dataType: 'numeric' | 'boolean' | 'text';
++  unit?: string;
++  frequency: 'daily' | 'weekly' | { intervalDays: number };
++  categories?: string[];
++  validRange?: { min: number; max: number };
++  isHabit?: boolean;
++  graceEnabled?: boolean;
++}
++
++export interface UpdateTrackerRequest {
++  name?: string;
++  unit?: string;
++  frequency?: 'daily' | 'weekly' | { intervalDays: number };
++  validRange?: { min: number; max: number };
++  isHabit?: boolean;
++  graceEnabled?: boolean;
++}
++
++export async function createTracker(req: CreateTrackerRequest): Promise<Tracker> {
++  const { data } = await apiClient.post<Tracker>('/trackers', req);
++  return data;
++}
++
++export async function updateTracker(
++  trackerId: string,
++  req: UpdateTrackerRequest,
++): Promise<Tracker> {
++  const { data } = await apiClient.patch<Tracker>(`/trackers/${trackerId}`, req);
++  return data;
++}
++
++export async function archiveTracker(trackerId: string): Promise<void> {
++  await apiClient.post(`/trackers/${trackerId}/archive`);
++}
++
++export async function deleteTracker(trackerId: string): Promise<void> {
++  await apiClient.delete(`/trackers/${trackerId}`);
++}
++
+ export async function fetchStreak(trackerId: string): Promise<Streak> {
+   const { data } = await apiClient.get<Streak>(`/trackers/${trackerId}/streak`);
+   return data;
+@@ -69,3 +125,41 @@ export async function fetchGoals(): Promise<GroupedGoals> {
+   const { data } = await apiClient.get<GroupedGoals>('/goals');
+   return data;
+ }
++
++export interface LogEntryRequest {
++  value: number | boolean | string;
++  note?: string;
++  localDate: string; // YYYY-MM-DD, computed client-side from the user's local time
++}
++
++export interface EditEntryRequest {
++  value?: number | boolean | string;
++  note?: string;
++}
++
++export interface EntryResult {
++  entry: Entry;
++  noteTruncated: boolean;
++}
++
++/**
++ * Requirements: 3.1, 3.7, 3.8
++ *
++ * On a same-day duplicate, the API returns 409 CONFLICT with
++ * `existingEntryId` (surfaced via the rejected AxiosError) — callers show
++ * an overwrite confirmation and, on confirm, call `editEntry` instead.
++ */
++export async function logEntry(trackerId: string, req: LogEntryRequest): Promise<EntryResult> {
++  const response = await apiClient.post<Entry>(`/trackers/${trackerId}/entries`, req);
++  return { entry: response.data, noteTruncated: response.headers['x-note-truncated'] === 'true' };
++}
++
++/** Requirements: 3.4, 3.6, 3.7, 3.8 */
++export async function editEntry(
++  trackerId: string,
++  entryId: string,
++  req: EditEntryRequest,
++): Promise<EntryResult> {
++  const response = await apiClient.patch<Entry>(`/trackers/${trackerId}/entries/${entryId}`, req);
++  return { entry: response.data, noteTruncated: response.headers['x-note-truncated'] === 'true' };
++}
+diff --git a/mobile/src/components/TrackerCard.tsx b/mobile/src/components/TrackerCard.tsx
+index b04d0c4..ea58094 100644
+--- a/mobile/src/components/TrackerCard.tsx
++++ b/mobile/src/components/TrackerCard.tsx
+@@ -1,19 +1,20 @@
+-import { View, Text, StyleSheet } from 'react-native';
++import { View, Text, Pressable, StyleSheet } from 'react-native';
+ 
+ import type { TrackerCardData } from '../hooks/useDashboardData';
+ 
+ interface Props {
+   data: TrackerCardData;
++  onPress?: () => void;
+ }
+ 
+ /**
+  * Requirements: 6.2, 6.6
+  */
+-export default function TrackerCard({ data }: Props) {
++export default function TrackerCard({ data, onPress }: Props) {
+   const { tracker, currentStreak, latestEntryValue, hasPendingEntryToday, goalProgressPct } = data;
+ 
+   return (
+-    <View style={[styles.card, hasPendingEntryToday && styles.cardPending]}>
++    <Pressable style={[styles.card, hasPendingEntryToday && styles.cardPending]} onPress={onPress}>
+       {hasPendingEntryToday && (
+         <View style={styles.badge}>
+           <Text style={styles.badgeText}>À faire</Text>
+@@ -28,17 +29,20 @@ export default function TrackerCard({ data }: Props) {
+           {tracker.unit ? ` ${tracker.unit}` : ''}
+         </Text>
+ 
+-        {tracker.isHabit && (
+-          <Text style={styles.streak}>🔥 {currentStreak}j</Text>
+-        )}
++        {tracker.isHabit && <Text style={styles.streak}>🔥 {currentStreak}j</Text>}
+       </View>
+ 
+       {goalProgressPct !== null && (
+         <View style={styles.progressTrack}>
+-          <View style={[styles.progressFill, { width: `${Math.min(100, Math.max(0, goalProgressPct))}%` }]} />
++          <View
++            style={[
++              styles.progressFill,
++              { width: `${Math.min(100, Math.max(0, goalProgressPct))}%` },
++            ]}
++          />
+         </View>
+       )}
+-    </View>
++    </Pressable>
+   );
+ }
+ 
+diff --git a/mobile/src/components/TrackerFormFields.tsx b/mobile/src/components/TrackerFormFields.tsx
+new file mode 100644
+index 0000000..55ccc22
+--- /dev/null
++++ b/mobile/src/components/TrackerFormFields.tsx
+@@ -0,0 +1,199 @@
++import { View, Text, TextInput, Pressable, Switch, StyleSheet } from 'react-native';
++
++export interface TrackerFormValues {
++  name: string;
++  unit: string;
++  frequencyType: 'daily' | 'weekly' | 'custom';
++  intervalDays: string;
++  validRangeEnabled: boolean;
++  validMin: string;
++  validMax: string;
++  isHabit: boolean;
++  graceEnabled: boolean;
++}
++
++export function defaultTrackerFormValues(): TrackerFormValues {
++  return {
++    name: '',
++    unit: '',
++    frequencyType: 'daily',
++    intervalDays: '2',
++    validRangeEnabled: false,
++    validMin: '',
++    validMax: '',
++    isHabit: false,
++    graceEnabled: false,
++  };
++}
++
++/** Converts form state into the API's `frequency` shape. Returns `null` for an invalid custom interval. */
++export function frequencyFromForm(
++  values: Pick<TrackerFormValues, 'frequencyType' | 'intervalDays'>,
++): 'daily' | 'weekly' | { intervalDays: number } | null {
++  if (values.frequencyType === 'daily') return 'daily';
++  if (values.frequencyType === 'weekly') return 'weekly';
++
++  const intervalDays = Number(values.intervalDays);
++  if (!Number.isInteger(intervalDays) || intervalDays < 1) return null;
++  return { intervalDays };
++}
++
++/** Converts form state into the API's `validRange` shape. Returns `undefined` when disabled, `null` when invalid. */
++export function validRangeFromForm(
++  values: Pick<TrackerFormValues, 'validRangeEnabled' | 'validMin' | 'validMax'>,
++): { min: number; max: number } | undefined | null {
++  if (!values.validRangeEnabled) return undefined;
++
++  const min = Number(values.validMin);
++  const max = Number(values.validMax);
++  if (
++    values.validMin === '' ||
++    values.validMax === '' ||
++    Number.isNaN(min) ||
++    Number.isNaN(max) ||
++    min >= max
++  ) {
++    return null;
++  }
++  return { min, max };
++}
++
++interface Props {
++  values: TrackerFormValues;
++  onChange: (values: TrackerFormValues) => void;
++  fieldErrors: Record<string, string>;
++}
++
++/**
++ * Requirements: 2.1, 2.3
++ */
++export default function TrackerFormFields({ values, onChange, fieldErrors }: Props): JSX.Element {
++  function set<K extends keyof TrackerFormValues>(key: K, value: TrackerFormValues[K]): void {
++    onChange({ ...values, [key]: value });
++  }
++
++  return (
++    <View style={styles.group}>
++      <Text style={styles.label}>Nom</Text>
++      <TextInput
++        style={styles.input}
++        value={values.name}
++        onChangeText={(v) => set('name', v)}
++        placeholder="ex. Méditation"
++        maxLength={100}
++      />
++      {fieldErrors['name'] && <Text style={styles.error}>{fieldErrors['name']}</Text>}
++
++      <Text style={styles.label}>Unité (optionnel)</Text>
++      <TextInput
++        style={styles.input}
++        value={values.unit}
++        onChangeText={(v) => set('unit', v)}
++        placeholder="ex. minutes"
++      />
++      {fieldErrors['unit'] && <Text style={styles.error}>{fieldErrors['unit']}</Text>}
++
++      <Text style={styles.label}>Fréquence</Text>
++      <View style={styles.segmented}>
++        {(['daily', 'weekly', 'custom'] as const).map((option) => (
++          <Pressable
++            key={option}
++            style={[styles.segment, values.frequencyType === option && styles.segmentActive]}
++            onPress={() => set('frequencyType', option)}
++          >
++            <Text
++              style={[
++                styles.segmentText,
++                values.frequencyType === option && styles.segmentTextActive,
++              ]}
++            >
++              {option === 'daily' ? 'Quotidien' : option === 'weekly' ? 'Hebdo' : 'Personnalisé'}
++            </Text>
++          </Pressable>
++        ))}
++      </View>
++      {values.frequencyType === 'custom' && (
++        <View style={styles.inlineRow}>
++          <Text style={styles.inlineLabel}>Tous les</Text>
++          <TextInput
++            style={[styles.input, styles.inlineInput]}
++            value={values.intervalDays}
++            onChangeText={(v) => set('intervalDays', v)}
++            keyboardType="number-pad"
++          />
++          <Text style={styles.inlineLabel}>jours</Text>
++        </View>
++      )}
++      {fieldErrors['frequency'] && <Text style={styles.error}>{fieldErrors['frequency']}</Text>}
++
++      <View style={styles.switchRow}>
++        <Text style={styles.label}>Plage de valeurs valides</Text>
++        <Switch
++          value={values.validRangeEnabled}
++          onValueChange={(v) => set('validRangeEnabled', v)}
++        />
++      </View>
++      {values.validRangeEnabled && (
++        <View style={styles.inlineRow}>
++          <TextInput
++            style={[styles.input, styles.inlineInput]}
++            value={values.validMin}
++            onChangeText={(v) => set('validMin', v)}
++            placeholder="min"
++            keyboardType="numeric"
++          />
++          <Text style={styles.inlineLabel}>à</Text>
++          <TextInput
++            style={[styles.input, styles.inlineInput]}
++            value={values.validMax}
++            onChangeText={(v) => set('validMax', v)}
++            placeholder="max"
++            keyboardType="numeric"
++          />
++        </View>
++      )}
++      {fieldErrors['validRange'] && <Text style={styles.error}>{fieldErrors['validRange']}</Text>}
++
++      <View style={styles.switchRow}>
++        <Text style={styles.label}>Habitude (suivi de série)</Text>
++        <Switch value={values.isHabit} onValueChange={(v) => set('isHabit', v)} />
++      </View>
++
++      {values.isHabit && (
++        <View style={styles.switchRow}>
++          <Text style={styles.label}>Jour de grâce (1 jour manqué toléré/semaine)</Text>
++          <Switch value={values.graceEnabled} onValueChange={(v) => set('graceEnabled', v)} />
++        </View>
++      )}
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  group: { gap: 4 },
++  label: { fontSize: 14, fontWeight: '600', marginTop: 12, marginBottom: 6 },
++  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12 },
++  error: { color: '#dc2626', fontSize: 13, marginTop: 4 },
++  segmented: { flexDirection: 'row', gap: 8 },
++  segment: {
++    flex: 1,
++    borderWidth: 1,
++    borderColor: '#ccc',
++    borderRadius: 8,
++    paddingVertical: 10,
++    alignItems: 'center',
++  },
++  segmentActive: { backgroundColor: '#111', borderColor: '#111' },
++  segmentText: { fontSize: 13, color: '#111' },
++  segmentTextActive: { color: '#fff', fontWeight: '600' },
++  inlineRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
++  inlineLabel: { fontSize: 14, color: '#444' },
++  inlineInput: { flex: 1 },
++  switchRow: {
++    flexDirection: 'row',
++    alignItems: 'center',
++    justifyContent: 'space-between',
++    marginTop: 14,
++    gap: 12,
++  },
++});
+diff --git a/mobile/src/lib/apiErrors.ts b/mobile/src/lib/apiErrors.ts
+new file mode 100644
+index 0000000..2c1a225
+--- /dev/null
++++ b/mobile/src/lib/apiErrors.ts
+@@ -0,0 +1,49 @@
++import type { AxiosError } from 'axios';
++
++export interface ApiValidationError {
++  error: 'VALIDATION_ERROR';
++  message: string;
++  fields: Record<string, string>;
++}
++
++export interface ApiConflictError {
++  error: 'CONFLICT';
++  message: string;
++  existingEntryId?: string;
++}
++
++export interface ApiLimitError {
++  error: 'LIMIT_ERROR';
++  message: string;
++}
++
++export interface ApiNotFoundError {
++  error: 'NOT_FOUND';
++  message: string;
++}
++
++type ApiErrorBody = ApiValidationError | ApiConflictError | ApiLimitError | ApiNotFoundError;
++
++function errorBody(err: unknown): ApiErrorBody | undefined {
++  const axiosErr = err as AxiosError<ApiErrorBody>;
++  return axiosErr.response?.data;
++}
++
++export function getFieldErrors(err: unknown): Record<string, string> {
++  const body = errorBody(err);
++  return body?.error === 'VALIDATION_ERROR' ? body.fields : {};
++}
++
++export function getConflictExistingEntryId(err: unknown): string | undefined {
++  const body = errorBody(err);
++  return body?.error === 'CONFLICT' ? body.existingEntryId : undefined;
++}
++
++export function isConflictError(err: unknown): boolean {
++  return errorBody(err)?.error === 'CONFLICT';
++}
++
++/** Falls back to the API's `message`, then a generic string. */
++export function getErrorMessage(err: unknown, fallback = 'Something went wrong'): string {
++  return errorBody(err)?.message ?? fallback;
++}
+diff --git a/mobile/src/screens/CreateTrackerScreen.tsx b/mobile/src/screens/CreateTrackerScreen.tsx
+new file mode 100644
+index 0000000..6fb33c0
+--- /dev/null
++++ b/mobile/src/screens/CreateTrackerScreen.tsx
+@@ -0,0 +1,167 @@
++import { useState } from 'react';
++import {
++  View,
++  Text,
++  TextInput,
++  Pressable,
++  ScrollView,
++  ActivityIndicator,
++  StyleSheet,
++} from 'react-native';
++import { useRouter } from 'expo-router';
++import { useQueryClient } from '@tanstack/react-query';
++
++import { createTracker } from '../api/trackers';
++import type { CreateTrackerRequest } from '../api/trackers';
++import TrackerFormFields, {
++  defaultTrackerFormValues,
++  frequencyFromForm,
++  validRangeFromForm,
++} from '../components/TrackerFormFields';
++import { getFieldErrors, getErrorMessage } from '../lib/apiErrors';
++
++const DATA_TYPES = ['numeric', 'boolean', 'text'] as const;
++
++/**
++ * Requirements: 2.1, 2.2, 2.3, 2.9, 2.10
++ */
++export default function CreateTrackerScreen(): JSX.Element {
++  const router = useRouter();
++  const queryClient = useQueryClient();
++
++  const [dataType, setDataType] = useState<(typeof DATA_TYPES)[number]>('numeric');
++  const [categoriesInput, setCategoriesInput] = useState('');
++  const [values, setValues] = useState(defaultTrackerFormValues());
++  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
++  const [topError, setTopError] = useState<string | null>(null);
++  const [submitting, setSubmitting] = useState(false);
++
++  async function handleSubmit(): Promise<void> {
++    setFieldErrors({});
++    setTopError(null);
++
++    const frequency = frequencyFromForm(values);
++    const validRange = validRangeFromForm(values);
++    if (frequency === null) {
++      setFieldErrors({ frequency: 'Intervalle personnalisé invalide (minimum 1 jour)' });
++      return;
++    }
++    if (validRange === null) {
++      setFieldErrors({ validRange: 'Plage invalide : le minimum doit être inférieur au maximum' });
++      return;
++    }
++
++    const req: CreateTrackerRequest = {
++      name: values.name,
++      dataType,
++      frequency,
++      ...(values.unit ? { unit: values.unit } : {}),
++      ...(validRange ? { validRange } : {}),
++      ...(categoriesInput.trim()
++        ? {
++            categories: categoriesInput
++              .split(',')
++              .map((c) => c.trim())
++              .filter(Boolean),
++          }
++        : {}),
++      isHabit: values.isHabit,
++      graceEnabled: values.isHabit && values.graceEnabled,
++    };
++
++    setSubmitting(true);
++    try {
++      await createTracker(req);
++      await queryClient.invalidateQueries({ queryKey: ['trackers'] });
++      await queryClient.invalidateQueries({ queryKey: ['dashboard'] });
++      router.back();
++    } catch (err) {
++      const fields = getFieldErrors(err);
++      if (Object.keys(fields).length > 0) {
++        setFieldErrors(fields);
++      } else {
++        setTopError(getErrorMessage(err, 'Impossible de créer le tracker'));
++      }
++    } finally {
++      setSubmitting(false);
++    }
++  }
++
++  return (
++    <ScrollView contentContainerStyle={styles.container}>
++      <Text style={styles.title}>Nouveau tracker</Text>
++
++      {topError && (
++        <View style={styles.limitBanner}>
++          <Text style={styles.limitBannerText}>{topError}</Text>
++        </View>
++      )}
++
++      <Text style={styles.label}>Type de donnée</Text>
++      <View style={styles.segmented}>
++        {DATA_TYPES.map((option) => (
++          <Pressable
++            key={option}
++            style={[styles.segment, dataType === option && styles.segmentActive]}
++            onPress={() => setDataType(option)}
++          >
++            <Text style={[styles.segmentText, dataType === option && styles.segmentTextActive]}>
++              {option === 'numeric' ? 'Numérique' : option === 'boolean' ? 'Oui/Non' : 'Texte'}
++            </Text>
++          </Pressable>
++        ))}
++      </View>
++
++      <TrackerFormFields values={values} onChange={setValues} fieldErrors={fieldErrors} />
++
++      <Text style={styles.label}>Catégories (séparées par des virgules, optionnel)</Text>
++      <TextInput
++        style={styles.input}
++        value={categoriesInput}
++        onChangeText={setCategoriesInput}
++        placeholder="ex. santé, bien-être"
++      />
++
++      <Pressable
++        style={styles.submitButton}
++        onPress={() => void handleSubmit()}
++        disabled={submitting}
++      >
++        {submitting ? (
++          <ActivityIndicator color="#fff" />
++        ) : (
++          <Text style={styles.submitButtonText}>Créer</Text>
++        )}
++      </Pressable>
++    </ScrollView>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { padding: 20, paddingBottom: 48 },
++  title: { fontSize: 22, fontWeight: '600', marginBottom: 16 },
++  label: { fontSize: 14, fontWeight: '600', marginTop: 12, marginBottom: 6 },
++  input: { borderWidth: 1, borderColor: '#ccc', borderRadius: 8, padding: 12 },
++  segmented: { flexDirection: 'row', gap: 8 },
++  segment: {
++    flex: 1,
++    borderWidth: 1,
++    borderColor: '#ccc',
++    borderRadius: 8,
++    paddingVertical: 10,
++    alignItems: 'center',
++  },
++  segmentActive: { backgroundColor: '#111', borderColor: '#111' },
++  segmentText: { fontSize: 13, color: '#111' },
++  segmentTextActive: { color: '#fff', fontWeight: '600' },
++  limitBanner: { backgroundColor: '#fef2f2', borderRadius: 8, padding: 12, marginBottom: 16 },
++  limitBannerText: { color: '#dc2626', fontSize: 13 },
++  submitButton: {
++    backgroundColor: '#111',
++    borderRadius: 8,
++    padding: 14,
++    alignItems: 'center',
++    marginTop: 24,
++  },
++  submitButtonText: { color: '#fff', fontWeight: '600' },
++});
+diff --git a/mobile/src/screens/DashboardScreen.tsx b/mobile/src/screens/DashboardScreen.tsx
+index 03607fd..bad42d5 100644
+--- a/mobile/src/screens/DashboardScreen.tsx
++++ b/mobile/src/screens/DashboardScreen.tsx
+@@ -1,4 +1,12 @@
+-import { View, Text, FlatList, ActivityIndicator, StyleSheet, RefreshControl, Pressable } from 'react-native';
++import {
++  View,
++  Text,
++  FlatList,
++  ActivityIndicator,
++  StyleSheet,
++  RefreshControl,
++  Pressable,
++} from 'react-native';
+ import { useRouter } from 'expo-router';
+ 
+ import { useDashboardData } from '../hooks/useDashboardData';
+@@ -29,7 +37,7 @@ export default function DashboardScreen(): JSX.Element {
+     return (
+       <View style={styles.centered}>
+         <Text style={styles.emptyTitle}>Aucun tracker pour l'instant</Text>
+-        <Pressable style={styles.cta} onPress={() => router.push('/(tabs)/settings')}>
++        <Pressable style={styles.cta} onPress={() => router.push('/trackers/new')}>
+           <Text style={styles.ctaText}>Créer mon premier tracker</Text>
+         </Pressable>
+       </View>
+@@ -41,7 +49,7 @@ export default function DashboardScreen(): JSX.Element {
+       data={cards}
+       keyExtractor={(item) => item.tracker.id}
+       contentContainerStyle={styles.list}
+-      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} />}
++      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} />}
+       ListHeaderComponent={
+         <>
+           {moodTracker && typeof moodTracker.latestEntryValue === 'number' && (
+@@ -51,7 +59,9 @@ export default function DashboardScreen(): JSX.Element {
+           {energyTracker && <EnergyTrendChart energyTrackerId={energyTracker.tracker.id} />}
+         </>
+       }
+-      renderItem={({ item }) => <TrackerCard data={item} />}
++      renderItem={({ item }) => (
++        <TrackerCard data={item} onPress={() => router.push(`/trackers/${item.tracker.id}/log`)} />
++      )}
+     />
+   );
+ }
+diff --git a/mobile/src/screens/EditTrackerScreen.tsx b/mobile/src/screens/EditTrackerScreen.tsx
+new file mode 100644
+index 0000000..aa172e7
+--- /dev/null
++++ b/mobile/src/screens/EditTrackerScreen.tsx
+@@ -0,0 +1,245 @@
++import { useEffect, useState } from 'react';
++import {
++  View,
++  Text,
++  Pressable,
++  ScrollView,
++  ActivityIndicator,
++  Alert,
++  StyleSheet,
++} from 'react-native';
++import { useRouter, useLocalSearchParams } from 'expo-router';
++import { useQuery, useQueryClient } from '@tanstack/react-query';
++
++import { fetchTracker, updateTracker, archiveTracker, deleteTracker } from '../api/trackers';
++import type { UpdateTrackerRequest } from '../api/trackers';
++import TrackerFormFields, {
++  frequencyFromForm,
++  validRangeFromForm,
++} from '../components/TrackerFormFields';
++import type { TrackerFormValues } from '../components/TrackerFormFields';
++import { getFieldErrors, getErrorMessage } from '../lib/apiErrors';
++
++function formValuesFromTracker(tracker: {
++  name: string;
++  unit: string | null;
++  frequency: 'daily' | 'weekly' | { intervalDays: number };
++  validRange: { min: number; max: number } | null;
++  isHabit: boolean;
++  graceEnabled: boolean;
++}): TrackerFormValues {
++  return {
++    name: tracker.name,
++    unit: tracker.unit ?? '',
++    frequencyType: typeof tracker.frequency === 'string' ? tracker.frequency : 'custom',
++    intervalDays:
++      typeof tracker.frequency === 'string' ? '2' : String(tracker.frequency.intervalDays),
++    validRangeEnabled: tracker.validRange !== null,
++    validMin: tracker.validRange ? String(tracker.validRange.min) : '',
++    validMax: tracker.validRange ? String(tracker.validRange.max) : '',
++    isHabit: tracker.isHabit,
++    graceEnabled: tracker.graceEnabled,
++  };
++}
++
++/**
++ * Requirements: 2.1, 2.3, 2.4, 2.5, 2.6, 2.7
++ */
++export default function EditTrackerScreen(): JSX.Element {
++  const router = useRouter();
++  const queryClient = useQueryClient();
++  const { id } = useLocalSearchParams<{ id: string }>();
++  const trackerId = id;
++
++  const { data: tracker, isLoading } = useQuery({
++    queryKey: ['tracker', trackerId],
++    queryFn: () => fetchTracker(trackerId),
++  });
++
++  const [values, setValues] = useState<TrackerFormValues | null>(null);
++  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
++  const [topError, setTopError] = useState<string | null>(null);
++  const [submitting, setSubmitting] = useState(false);
++
++  useEffect(() => {
++    if (tracker) {
++      setValues(formValuesFromTracker(tracker));
++    }
++  }, [tracker]);
++
++  async function invalidateAndBack(): Promise<void> {
++    await Promise.all([
++      queryClient.invalidateQueries({ queryKey: ['trackers'] }),
++      queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
++      queryClient.invalidateQueries({ queryKey: ['tracker', trackerId] }),
++    ]);
++    router.back();
++  }
++
++  async function handleSubmit(): Promise<void> {
++    if (!values) return;
++    setFieldErrors({});
++    setTopError(null);
++
++    const frequency = frequencyFromForm(values);
++    const validRange = validRangeFromForm(values);
++    if (frequency === null) {
++      setFieldErrors({ frequency: 'Intervalle personnalisé invalide (minimum 1 jour)' });
++      return;
++    }
++    if (validRange === null) {
++      setFieldErrors({ validRange: 'Plage invalide : le minimum doit être inférieur au maximum' });
++      return;
++    }
++
++    const req: UpdateTrackerRequest = {
++      name: values.name,
++      unit: values.unit,
++      frequency,
++      ...(validRange !== undefined ? { validRange } : {}),
++      isHabit: values.isHabit,
++      graceEnabled: values.isHabit && values.graceEnabled,
++    };
++
++    setSubmitting(true);
++    try {
++      await updateTracker(trackerId, req);
++      await invalidateAndBack();
++    } catch (err) {
++      const fields = getFieldErrors(err);
++      if (Object.keys(fields).length > 0) {
++        setFieldErrors(fields);
++      } else {
++        setTopError(getErrorMessage(err, 'Impossible de mettre à jour le tracker'));
++      }
++    } finally {
++      setSubmitting(false);
++    }
++  }
++
++  async function handleArchive(): Promise<void> {
++    setSubmitting(true);
++    try {
++      await archiveTracker(trackerId);
++      await invalidateAndBack();
++    } catch (err) {
++      setTopError(getErrorMessage(err, "Impossible d'archiver le tracker"));
++    } finally {
++      setSubmitting(false);
++    }
++  }
++
++  function confirmDelete(): void {
++    Alert.alert(
++      'Supprimer ce tracker ?',
++      'Toutes les entrées et objectifs associés seront définitivement supprimés.',
++      [
++        { text: 'Annuler', style: 'cancel' },
++        { text: 'Supprimer', style: 'destructive', onPress: () => void handleDelete() },
++      ],
++    );
++  }
++
++  async function handleDelete(): Promise<void> {
++    setSubmitting(true);
++    try {
++      await deleteTracker(trackerId);
++      await invalidateAndBack();
++    } catch (err) {
++      setTopError(getErrorMessage(err, 'Impossible de supprimer le tracker'));
++    } finally {
++      setSubmitting(false);
++    }
++  }
++
++  if (isLoading || !values || !tracker) {
++    return (
++      <View style={styles.centered}>
++        <ActivityIndicator />
++      </View>
++    );
++  }
++
++  return (
++    <ScrollView contentContainerStyle={styles.container}>
++      <Text style={styles.title}>Modifier {tracker.name}</Text>
++
++      {topError && (
++        <View style={styles.errorBanner}>
++          <Text style={styles.errorBannerText}>{topError}</Text>
++        </View>
++      )}
++
++      <TrackerFormFields values={values} onChange={setValues} fieldErrors={fieldErrors} />
++
++      <Pressable
++        style={styles.submitButton}
++        onPress={() => void handleSubmit()}
++        disabled={submitting}
++      >
++        {submitting ? (
++          <ActivityIndicator color="#fff" />
++        ) : (
++          <Text style={styles.submitButtonText}>Enregistrer</Text>
++        )}
++      </Pressable>
++
++      <View style={styles.dangerZone}>
++        {!tracker.isArchived && (
++          <Pressable
++            style={styles.secondaryButton}
++            onPress={() => void handleArchive()}
++            disabled={submitting}
++          >
++            <Text style={styles.secondaryButtonText}>Archiver</Text>
++          </Pressable>
++        )}
++
++        {/* Req 2.6: delete is disabled while the tracker is archived */}
++        <Pressable
++          style={[styles.deleteButton, tracker.isArchived && styles.deleteButtonDisabled]}
++          onPress={confirmDelete}
++          disabled={submitting || tracker.isArchived}
++        >
++          <Text style={styles.deleteButtonText}>
++            {tracker.isArchived ? 'Suppression désactivée (archivé)' : 'Supprimer'}
++          </Text>
++        </Pressable>
++      </View>
++    </ScrollView>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { padding: 20, paddingBottom: 48 },
++  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
++  title: { fontSize: 22, fontWeight: '600', marginBottom: 16 },
++  errorBanner: { backgroundColor: '#fef2f2', borderRadius: 8, padding: 12, marginBottom: 16 },
++  errorBannerText: { color: '#dc2626', fontSize: 13 },
++  submitButton: {
++    backgroundColor: '#111',
++    borderRadius: 8,
++    padding: 14,
++    alignItems: 'center',
++    marginTop: 24,
++  },
++  submitButtonText: { color: '#fff', fontWeight: '600' },
++  dangerZone: { marginTop: 32, gap: 10 },
++  secondaryButton: {
++    borderWidth: 1,
++    borderColor: '#ccc',
++    borderRadius: 8,
++    padding: 12,
++    alignItems: 'center',
++  },
++  secondaryButtonText: { color: '#111', fontWeight: '600' },
++  deleteButton: {
++    borderWidth: 1,
++    borderColor: '#dc2626',
++    borderRadius: 8,
++    padding: 12,
++    alignItems: 'center',
++  },
++  deleteButtonDisabled: { borderColor: '#ccc' },
++  deleteButtonText: { color: '#dc2626', fontWeight: '600' },
++});
+diff --git a/mobile/src/screens/LogEntryScreen.tsx b/mobile/src/screens/LogEntryScreen.tsx
+new file mode 100644
+index 0000000..43996d6
+--- /dev/null
++++ b/mobile/src/screens/LogEntryScreen.tsx
+@@ -0,0 +1,287 @@
++import { useState } from 'react';
++import {
++  View,
++  Text,
++  TextInput,
++  Pressable,
++  Modal,
++  ActivityIndicator,
++  StyleSheet,
++} from 'react-native';
++import { useRouter, useLocalSearchParams } from 'expo-router';
++import { useQuery, useQueryClient } from '@tanstack/react-query';
++
++import { fetchTracker, logEntry, editEntry } from '../api/trackers';
++import { getConflictExistingEntryId, isConflictError, getErrorMessage } from '../lib/apiErrors';
++
++function todayLocalDate(): string {
++  const now = new Date();
++  const offsetMs = now.getTimezoneOffset() * 60_000;
++  return new Date(now.getTime() - offsetMs).toISOString().slice(0, 10);
++}
++
++/**
++ * Requirements: 3.1, 3.2, 3.4, 3.5, 3.7, 3.8
++ */
++export default function LogEntryScreen(): JSX.Element {
++  const router = useRouter();
++  const queryClient = useQueryClient();
++  const { id } = useLocalSearchParams<{ id: string }>();
++  const trackerId = id;
++
++  const { data: tracker, isLoading } = useQuery({
++    queryKey: ['tracker', trackerId],
++    queryFn: () => fetchTracker(trackerId),
++  });
++
++  const [numericValue, setNumericValue] = useState('');
++  const [booleanValue, setBooleanValue] = useState<boolean | null>(null);
++  const [textValue, setTextValue] = useState('');
++  const [note, setNote] = useState('');
++
++  const [error, setError] = useState<string | null>(null);
++  const [truncationWarning, setTruncationWarning] = useState(false);
++  const [submitting, setSubmitting] = useState(false);
++  const [conflictEntryId, setConflictEntryId] = useState<string | null>(null);
++
++  function currentValue(): number | boolean | string | null {
++    if (!tracker) return null;
++    if (tracker.dataType === 'numeric') {
++      const n = Number(numericValue);
++      return numericValue !== '' && !Number.isNaN(n) ? n : null;
++    }
++    if (tracker.dataType === 'boolean') return booleanValue;
++    return textValue.trim() ? textValue : null;
++  }
++
++  async function submit(overwriteEntryId?: string): Promise<void> {
++    const value = currentValue();
++    if (value === null) {
++      setError('Merci de renseigner une valeur');
++      return;
++    }
++
++    setSubmitting(true);
++    setError(null);
++    try {
++      const result = overwriteEntryId
++        ? await editEntry(trackerId, overwriteEntryId, { value, ...(note ? { note } : {}) })
++        : await logEntry(trackerId, {
++            value,
++            ...(note ? { note } : {}),
++            localDate: todayLocalDate(),
++          });
++
++      setTruncationWarning(result.noteTruncated);
++      setConflictEntryId(null);
++
++      await Promise.all([
++        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
++        queryClient.invalidateQueries({ queryKey: ['trackers'] }),
++      ]);
++
++      if (!result.noteTruncated) {
++        router.back();
++      }
++    } catch (err) {
++      if (isConflictError(err)) {
++        const existingEntryId = getConflictExistingEntryId(err);
++        if (existingEntryId) {
++          setConflictEntryId(existingEntryId);
++        }
++      } else {
++        setError(getErrorMessage(err, "Impossible d'enregistrer l'entrée"));
++      }
++    } finally {
++      setSubmitting(false);
++    }
++  }
++
++  if (isLoading || !tracker) {
++    return (
++      <View style={styles.centered}>
++        <ActivityIndicator />
++      </View>
++    );
++  }
++
++  return (
++    <View style={styles.container}>
++      <Text style={styles.title}>{tracker.name}</Text>
++
++      {error && <Text style={styles.error}>{error}</Text>}
++      {truncationWarning && (
++        <Text style={styles.warning}>La note a été raccourcie à 500 caractères.</Text>
++      )}
++
++      {tracker.dataType === 'numeric' && (
++        <View style={styles.field}>
++          <TextInput
++            style={styles.numericInput}
++            value={numericValue}
++            onChangeText={setNumericValue}
++            keyboardType="numeric"
++            placeholder="0"
++          />
++          {tracker.unit && <Text style={styles.unit}>{tracker.unit}</Text>}
++        </View>
++      )}
++
++      {tracker.dataType === 'boolean' && (
++        <View style={styles.booleanRow}>
++          <Pressable
++            style={[styles.booleanButton, booleanValue === true && styles.booleanButtonActive]}
++            onPress={() => setBooleanValue(true)}
++          >
++            <Text style={[styles.booleanText, booleanValue === true && styles.booleanTextActive]}>
++              Oui
++            </Text>
++          </Pressable>
++          <Pressable
++            style={[styles.booleanButton, booleanValue === false && styles.booleanButtonActive]}
++            onPress={() => setBooleanValue(false)}
++          >
++            <Text style={[styles.booleanText, booleanValue === false && styles.booleanTextActive]}>
++              Non
++            </Text>
++          </Pressable>
++        </View>
++      )}
++
++      {tracker.dataType === 'text' && (
++        <TextInput
++          style={styles.textValueInput}
++          value={textValue}
++          onChangeText={setTextValue}
++          multiline
++          maxLength={500}
++          placeholder="Valeur"
++        />
++      )}
++
++      <Text style={styles.label}>Note (optionnel)</Text>
++      <TextInput
++        style={styles.noteInput}
++        value={note}
++        onChangeText={setNote}
++        multiline
++        placeholder="Ajouter une note..."
++      />
++      <Text style={styles.noteCount}>{note.length}/500</Text>
++
++      <Pressable style={styles.submitButton} onPress={() => void submit()} disabled={submitting}>
++        {submitting ? (
++          <ActivityIndicator color="#fff" />
++        ) : (
++          <Text style={styles.submitButtonText}>Enregistrer</Text>
++        )}
++      </Pressable>
++
++      <Modal visible={conflictEntryId !== null} transparent animationType="fade">
++        <View style={styles.modalBackdrop}>
++          <View style={styles.modalCard}>
++            <Text style={styles.modalTitle}>Une entrée existe déjà aujourd'hui</Text>
++            <Text style={styles.modalBody}>
++              Voulez-vous remplacer la valeur existante par celle-ci ?
++            </Text>
++            <View style={styles.modalActions}>
++              <Pressable style={styles.modalCancel} onPress={() => setConflictEntryId(null)}>
++                <Text style={styles.modalCancelText}>Annuler</Text>
++              </Pressable>
++              <Pressable
++                style={styles.modalConfirm}
++                onPress={() => void submit(conflictEntryId ?? undefined)}
++              >
++                <Text style={styles.modalConfirmText}>Remplacer</Text>
++              </Pressable>
++            </View>
++          </View>
++        </View>
++      </Modal>
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { flex: 1, padding: 20 },
++  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
++  title: { fontSize: 22, fontWeight: '600', marginBottom: 16 },
++  error: { color: '#dc2626', fontSize: 13, marginBottom: 12 },
++  warning: { color: '#b45309', fontSize: 13, marginBottom: 12 },
++  label: { fontSize: 14, fontWeight: '600', marginTop: 20, marginBottom: 6 },
++  field: { flexDirection: 'row', alignItems: 'center', gap: 8 },
++  numericInput: {
++    flex: 1,
++    borderWidth: 1,
++    borderColor: '#ccc',
++    borderRadius: 8,
++    padding: 14,
++    fontSize: 20,
++  },
++  unit: { fontSize: 16, color: '#666' },
++  booleanRow: { flexDirection: 'row', gap: 12 },
++  booleanButton: {
++    flex: 1,
++    borderWidth: 1,
++    borderColor: '#ccc',
++    borderRadius: 8,
++    paddingVertical: 16,
++    alignItems: 'center',
++  },
++  booleanButtonActive: { backgroundColor: '#111', borderColor: '#111' },
++  booleanText: { fontSize: 16, color: '#111' },
++  booleanTextActive: { color: '#fff', fontWeight: '600' },
++  textValueInput: {
++    borderWidth: 1,
++    borderColor: '#ccc',
++    borderRadius: 8,
++    padding: 12,
++    minHeight: 80,
++    textAlignVertical: 'top',
++  },
++  noteInput: {
++    borderWidth: 1,
++    borderColor: '#ccc',
++    borderRadius: 8,
++    padding: 12,
++    minHeight: 60,
++    textAlignVertical: 'top',
++  },
++  noteCount: { fontSize: 11, color: '#999', textAlign: 'right', marginTop: 4 },
++  submitButton: {
++    backgroundColor: '#111',
++    borderRadius: 8,
++    padding: 14,
++    alignItems: 'center',
++    marginTop: 28,
++  },
++  submitButtonText: { color: '#fff', fontWeight: '600' },
++  modalBackdrop: {
++    flex: 1,
++    backgroundColor: 'rgba(0,0,0,0.4)',
++    alignItems: 'center',
++    justifyContent: 'center',
++    padding: 24,
++  },
++  modalCard: { backgroundColor: '#fff', borderRadius: 12, padding: 20, width: '100%' },
++  modalTitle: { fontSize: 16, fontWeight: '600', marginBottom: 8 },
++  modalBody: { fontSize: 14, color: '#444', marginBottom: 20 },
++  modalActions: { flexDirection: 'row', gap: 12 },
++  modalCancel: {
++    flex: 1,
++    borderWidth: 1,
++    borderColor: '#ccc',
++    borderRadius: 8,
++    padding: 12,
++    alignItems: 'center',
++  },
++  modalCancelText: { color: '#111', fontWeight: '600' },
++  modalConfirm: {
++    flex: 1,
++    backgroundColor: '#111',
++    borderRadius: 8,
++    padding: 12,
++    alignItems: 'center',
++  },
++  modalConfirmText: { color: '#fff', fontWeight: '600' },
++});
+diff --git a/mobile/src/screens/SettingsScreen.tsx b/mobile/src/screens/SettingsScreen.tsx
+index da7c69d..7d15828 100644
+--- a/mobile/src/screens/SettingsScreen.tsx
++++ b/mobile/src/screens/SettingsScreen.tsx
+@@ -1,16 +1,33 @@
+-import { View, Text, StyleSheet } from 'react-native';
++import { View, Text, Pressable, StyleSheet } from 'react-native';
++import { useRouter } from 'expo-router';
+ 
++/**
++ * Requirements: 2.1
++ */
+ export default function SettingsScreen(): JSX.Element {
++  const router = useRouter();
++
+   return (
+     <View style={styles.container}>
+-      <Text style={styles.title}>Settings</Text>
+-      <Text style={styles.subtitle}>À implémenter</Text>
++      <Pressable style={styles.row} onPress={() => router.push('/trackers')}>
++        <Text style={styles.rowText}>Mes trackers</Text>
++        <Text style={styles.chevron}>›</Text>
++      </Pressable>
+     </View>
+   );
+ }
+ 
+ const styles = StyleSheet.create({
+-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
+-  title: { fontSize: 22, fontWeight: '600' },
+-  subtitle: { color: '#888' },
++  container: { flex: 1, padding: 16 },
++  row: {
++    flexDirection: 'row',
++    alignItems: 'center',
++    justifyContent: 'space-between',
++    borderWidth: 1,
++    borderColor: '#e5e5e5',
++    borderRadius: 10,
++    padding: 16,
++  },
++  rowText: { fontSize: 16, fontWeight: '500' },
++  chevron: { fontSize: 20, color: '#999' },
+ });
+diff --git a/mobile/src/screens/TrackerListScreen.tsx b/mobile/src/screens/TrackerListScreen.tsx
+new file mode 100644
+index 0000000..a5413c2
+--- /dev/null
++++ b/mobile/src/screens/TrackerListScreen.tsx
+@@ -0,0 +1,118 @@
++import { View, Text, FlatList, Pressable, ActivityIndicator, StyleSheet } from 'react-native';
++import { useRouter } from 'expo-router';
++import { useQuery } from '@tanstack/react-query';
++
++import { fetchTrackers } from '../api/trackers';
++import type { Tracker } from '../api/trackers';
++
++/**
++ * Requirements: 2.1, 2.3, 2.5, 2.9
++ */
++export default function TrackerListScreen(): JSX.Element {
++  const router = useRouter();
++  const { data: trackers, isLoading } = useQuery({
++    queryKey: ['trackers', { includeArchived: true }],
++    queryFn: () => fetchTrackers({ includeArchived: true }),
++  });
++
++  const activeCount = trackers?.filter((t) => !t.isArchived).length ?? 0;
++
++  if (isLoading) {
++    return (
++      <View style={styles.centered}>
++        <ActivityIndicator />
++      </View>
++    );
++  }
++
++  return (
++    <View style={styles.container}>
++      <View style={styles.header}>
++        <Text style={styles.count}>{activeCount} / 50 trackers actifs</Text>
++        <Pressable
++          style={[styles.addButton, activeCount >= 50 && styles.addButtonDisabled]}
++          disabled={activeCount >= 50}
++          onPress={() => router.push('/trackers/new')}
++        >
++          <Text style={styles.addButtonText}>+ Nouveau</Text>
++        </Pressable>
++      </View>
++
++      <FlatList
++        data={trackers ?? []}
++        keyExtractor={(item) => item.id}
++        contentContainerStyle={styles.list}
++        ListEmptyComponent={
++          <View style={styles.centered}>
++            <Text style={styles.emptyText}>Aucun tracker pour l'instant</Text>
++          </View>
++        }
++        renderItem={({ item }) => (
++          <TrackerRow tracker={item} onPress={() => router.push(`/trackers/${item.id}/edit`)} />
++        )}
++      />
++    </View>
++  );
++}
++
++function TrackerRow({ tracker, onPress }: { tracker: Tracker; onPress: () => void }): JSX.Element {
++  return (
++    <Pressable style={styles.row} onPress={onPress}>
++      <View style={styles.rowMain}>
++        <Text style={styles.rowName}>{tracker.name}</Text>
++        <Text style={styles.rowMeta}>
++          {tracker.dataType}
++          {tracker.unit ? ` · ${tracker.unit}` : ''}
++          {tracker.isHabit ? ' · habit' : ''}
++        </Text>
++      </View>
++      {tracker.isArchived && (
++        <View style={styles.archivedBadge}>
++          <Text style={styles.archivedBadgeText}>Archivé</Text>
++        </View>
++      )}
++    </Pressable>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { flex: 1 },
++  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
++  header: {
++    flexDirection: 'row',
++    alignItems: 'center',
++    justifyContent: 'space-between',
++    padding: 16,
++  },
++  count: { color: '#666', fontSize: 13 },
++  addButton: {
++    backgroundColor: '#111',
++    borderRadius: 8,
++    paddingHorizontal: 14,
++    paddingVertical: 8,
++  },
++  addButtonDisabled: { backgroundColor: '#ccc' },
++  addButtonText: { color: '#fff', fontWeight: '600' },
++  list: { paddingHorizontal: 16, paddingBottom: 24 },
++  emptyText: { color: '#888' },
++  row: {
++    flexDirection: 'row',
++    alignItems: 'center',
++    justifyContent: 'space-between',
++    borderWidth: 1,
++    borderColor: '#e5e5e5',
++    borderRadius: 10,
++    padding: 14,
++    marginBottom: 8,
++  },
++  rowMain: { flex: 1 },
++  rowName: { fontSize: 16, fontWeight: '600' },
++  rowMeta: { fontSize: 13, color: '#888', marginTop: 2 },
++  archivedBadge: {
++    backgroundColor: '#eee',
++    borderRadius: 6,
++    paddingHorizontal: 8,
++    paddingVertical: 3,
++  },
++  archivedBadgeText: { fontSize: 11, color: '#666', fontWeight: '600' },
++});

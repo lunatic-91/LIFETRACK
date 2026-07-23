@@ -12,6 +12,7 @@ export default function RootLayout(): JSX.Element {
         <Stack.Screen name="index" />
         <Stack.Screen name="(auth)" />
         <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="trackers" options={{ headerShown: true }} />
       </Stack>
     </QueryClientProvider>
   );

@@ -1,19 +1,20 @@
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, Pressable, StyleSheet } from 'react-native';
 
 import type { TrackerCardData } from '../hooks/useDashboardData';
 
 interface Props {
   data: TrackerCardData;
+  onPress?: () => void;
 }
 
 /**
  * Requirements: 6.2, 6.6
  */
-export default function TrackerCard({ data }: Props) {
+export default function TrackerCard({ data, onPress }: Props) {
   const { tracker, currentStreak, latestEntryValue, hasPendingEntryToday, goalProgressPct } = data;
 
   return (
-    <View style={[styles.card, hasPendingEntryToday && styles.cardPending]}>
+    <Pressable style={[styles.card, hasPendingEntryToday && styles.cardPending]} onPress={onPress}>
       {hasPendingEntryToday && (
         <View style={styles.badge}>
           <Text style={styles.badgeText}>À faire</Text>
@@ -28,17 +29,20 @@ export default function TrackerCard({ data }: Props) {
           {tracker.unit ? ` ${tracker.unit}` : ''}
         </Text>
 
-        {tracker.isHabit && (
-          <Text style={styles.streak}>🔥 {currentStreak}j</Text>
-        )}
+        {tracker.isHabit && <Text style={styles.streak}>🔥 {currentStreak}j</Text>}
       </View>
 
       {goalProgressPct !== null && (
         <View style={styles.progressTrack}>
-          <View style={[styles.progressFill, { width: `${Math.min(100, Math.max(0, goalProgressPct))}%` }]} />
+          <View
+            style={[
+              styles.progressFill,
+              { width: `${Math.min(100, Math.max(0, goalProgressPct))}%` },
+            ]}
+          />
         </View>
       )}
-    </View>
+    </Pressable>
   );
 }
 
