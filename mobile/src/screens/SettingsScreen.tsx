@@ -13,6 +13,10 @@ export default function SettingsScreen(): JSX.Element {
         <Text style={styles.rowText}>Mes trackers</Text>
         <Text style={styles.chevron}>›</Text>
       </Pressable>
+      <Pressable style={styles.row} onPress={() => router.push('/(onboarding)/welcome')}>
+        <Text style={styles.rowText}>Relancer l'onboarding</Text>
+        <Text style={styles.chevron}>›</Text>
+      </Pressable>
     </View>
   );
 }

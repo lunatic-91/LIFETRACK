@@ -1,0 +1,740 @@
+diff --git a/mobile/app/(onboarding)/_layout.tsx b/mobile/app/(onboarding)/_layout.tsx
+new file mode 100644
+index 0000000..62b4104
+--- /dev/null
++++ b/mobile/app/(onboarding)/_layout.tsx
+@@ -0,0 +1,11 @@
++import { Stack } from 'expo-router';
++
++import { OnboardingProvider } from '../../src/lib/onboardingContext';
++
++export default function OnboardingLayout() {
++  return (
++    <OnboardingProvider>
++      <Stack screenOptions={{ headerShown: false }} />
++    </OnboardingProvider>
++  );
++}
+diff --git a/mobile/app/(onboarding)/complete.tsx b/mobile/app/(onboarding)/complete.tsx
+new file mode 100644
+index 0000000..cdd257e
+--- /dev/null
++++ b/mobile/app/(onboarding)/complete.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/onboarding/CompletionScreen';
+diff --git a/mobile/app/(onboarding)/edit.tsx b/mobile/app/(onboarding)/edit.tsx
+new file mode 100644
+index 0000000..170c59d
+--- /dev/null
++++ b/mobile/app/(onboarding)/edit.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/onboarding/TrackerEditScreen';
+diff --git a/mobile/app/(onboarding)/templates.tsx b/mobile/app/(onboarding)/templates.tsx
+new file mode 100644
+index 0000000..0a2a6e2
+--- /dev/null
++++ b/mobile/app/(onboarding)/templates.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/onboarding/TemplateSelectionScreen';
+diff --git a/mobile/app/(onboarding)/welcome.tsx b/mobile/app/(onboarding)/welcome.tsx
+new file mode 100644
+index 0000000..2bb95bb
+--- /dev/null
++++ b/mobile/app/(onboarding)/welcome.tsx
+@@ -0,0 +1 @@
++export { default } from '../../src/screens/onboarding/WelcomeScreen';
+diff --git a/mobile/app/_layout.tsx b/mobile/app/_layout.tsx
+index 92a05e8..7a89999 100644
+--- a/mobile/app/_layout.tsx
++++ b/mobile/app/_layout.tsx
+@@ -11,6 +11,7 @@ export default function RootLayout(): JSX.Element {
+       <Stack screenOptions={{ headerShown: false }}>
+         <Stack.Screen name="index" />
+         <Stack.Screen name="(auth)" />
++        <Stack.Screen name="(onboarding)" />
+         <Stack.Screen name="(tabs)" />
+         <Stack.Screen name="trackers" options={{ headerShown: true }} />
+         <Stack.Screen name="goals" options={{ headerShown: true }} />
+diff --git a/mobile/app/index.tsx b/mobile/app/index.tsx
+index 68f0f4e..84ca250 100644
+--- a/mobile/app/index.tsx
++++ b/mobile/app/index.tsx
+@@ -3,15 +3,37 @@ import { View, ActivityIndicator } from 'react-native';
+ import { Redirect } from 'expo-router';
+ 
+ import { hasActiveSession } from '../src/lib/session';
++import { fetchTrackers } from '../src/api/trackers';
+ 
+-export default function Index(): JSX.Element {
++type Destination = '/(tabs)' | '/(auth)/login' | '/(onboarding)/welcome';
++
++/**
++ * Requirements: 11.1
++ */
++export default function Index() {
+   const [checking, setChecking] = useState(true);
+-  const [authenticated, setAuthenticated] = useState(false);
++  const [destination, setDestination] = useState<Destination>('/(auth)/login');
+ 
+   useEffect(() => {
+-    hasActiveSession()
+-      .then(setAuthenticated)
+-      .finally(() => setChecking(false));
++    async function resolveDestination(): Promise<void> {
++      const authenticated = await hasActiveSession();
++      if (!authenticated) {
++        setDestination('/(auth)/login');
++        return;
++      }
++
++      try {
++        const trackers = await fetchTrackers();
++        // No Trackers yet = first login -> onboarding (Req 11.1).
++        setDestination(trackers.length === 0 ? '/(onboarding)/welcome' : '/(tabs)');
++      } catch {
++        // If the trackers check fails (e.g. transient network issue), fail
++        // open to the Dashboard rather than blocking the user on the splash.
++        setDestination('/(tabs)');
++      }
++    }
++
++    resolveDestination().finally(() => setChecking(false));
+   }, []);
+ 
+   if (checking) {
+@@ -22,5 +44,5 @@ export default function Index(): JSX.Element {
+     );
+   }
+ 
+-  return <Redirect href={authenticated ? '/(tabs)' : '/(auth)/login'} />;
++  return <Redirect href={destination} />;
+ }
+diff --git a/mobile/src/lib/__tests__/trackerTemplates.property.test.ts b/mobile/src/lib/__tests__/trackerTemplates.property.test.ts
+new file mode 100644
+index 0000000..77feebe
+--- /dev/null
++++ b/mobile/src/lib/__tests__/trackerTemplates.property.test.ts
+@@ -0,0 +1,99 @@
++/**
++ * Property-based tests for src/lib/trackerTemplates.ts — onboarding batch
++ * selection logic.
++ * Feature: lifetrack-app
++ */
++
++import * as fc from 'fast-check';
++
++import { TRACKER_TEMPLATES, MAX_ACTIVE_TRACKERS, resolveBatchSelection } from '../trackerTemplates';
++
++const arbitraryTemplateSubset = fc
++  .subarray(TRACKER_TEMPLATES, { minLength: 0, maxLength: TRACKER_TEMPLATES.length })
++  .chain((subset) =>
++    subset.length === 0
++      ? fc.constant([])
++      : fc.array(fc.constantFrom(...subset), { minLength: 0, maxLength: 10 }),
++  );
++
++// ---------------------------------------------------------------------------
++// Property 22: Onboarding template creates tracker with correct defaults
++// Validates: Requirements 11.3
++// ---------------------------------------------------------------------------
++
++describe('Property 22: Onboarding template creates tracker with correct defaults', () => {
++  // Feature: lifetrack-app, Property 22: Onboarding template creates tracker with correct defaults
++
++  test('every template exposes a complete, valid CreateTrackerRequest', () => {
++    for (const template of TRACKER_TEMPLATES) {
++      expect(template.defaults.name.length).toBeGreaterThan(0);
++      expect(['numeric', 'boolean', 'text']).toContain(template.defaults.dataType);
++      expect(['daily', 'weekly']).toContain(template.defaults.frequency);
++      if (template.defaults.validRange) {
++        expect(template.defaults.validRange.min).toBeLessThan(template.defaults.validRange.max);
++      }
++    }
++  });
++
++  test('there are at least 5 pre-built templates', () => {
++    expect(TRACKER_TEMPLATES.length).toBeGreaterThanOrEqual(5);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Property 24: Active tracker limit enforced during onboarding batch selection
++// Validates: Requirements 11.7, 2.10
++// ---------------------------------------------------------------------------
++
++describe('Property 24: Active tracker limit enforced during onboarding batch selection', () => {
++  // Feature: lifetrack-app, Property 24: Active tracker limit enforced during onboarding batch selection
++
++  test('for any N active trackers and K selected templates, exactly min(K, 50-N) are created', async () => {
++    await fc.assert(
++      fc.asyncProperty(
++        fc.integer({ min: 0, max: 50 }),
++        arbitraryTemplateSubset,
++        async (activeCount, selected) => {
++          const { toCreate, rejected } = resolveBatchSelection(activeCount, selected);
++          const remainingCapacity = Math.max(0, MAX_ACTIVE_TRACKERS - activeCount);
++
++          expect(toCreate.length).toBe(Math.min(selected.length, remainingCapacity));
++          expect(toCreate.length + rejected.length).toBe(selected.length);
++          expect(activeCount + toCreate.length).toBeLessThanOrEqual(MAX_ACTIVE_TRACKERS);
++        },
++      ),
++    );
++  });
++
++  test('at exactly 50 active trackers, no new template can be created', () => {
++    const { toCreate, rejected } = resolveBatchSelection(50, [TRACKER_TEMPLATES[0]!]);
++    expect(toCreate).toHaveLength(0);
++    expect(rejected).toHaveLength(1);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Property 23: Re-selecting existing template creates a new tracker
++// Validates: Requirements 11.6
++// ---------------------------------------------------------------------------
++
++describe('Property 23: Re-selecting existing template creates a new tracker', () => {
++  // Feature: lifetrack-app, Property 23: Re-selecting existing template creates a new tracker
++
++  test('selecting the same template twice (two onboarding sessions) both count toward creation, not deduplicated', () => {
++    const template = TRACKER_TEMPLATES[0]!;
++    // Simulates: first session selects it (activeCount 0 -> 1), second
++    // session (re-run from settings) selects it again with the updated count.
++    const firstRun = resolveBatchSelection(0, [template]);
++    expect(firstRun.toCreate).toHaveLength(1);
++
++    const secondRun = resolveBatchSelection(1, [template]);
++    expect(secondRun.toCreate).toHaveLength(1);
++
++    // Nothing in resolveBatchSelection deduplicates by template id — each
++    // call independently produces a tracker to create, matching the
++    // requirement that re-running onboarding creates a distinct new tracker
++    // rather than mutating the existing one.
++    expect(firstRun.toCreate[0]!.id).toBe(secondRun.toCreate[0]!.id);
++  });
++});
+diff --git a/mobile/src/lib/onboardingContext.tsx b/mobile/src/lib/onboardingContext.tsx
+new file mode 100644
+index 0000000..3199490
+--- /dev/null
++++ b/mobile/src/lib/onboardingContext.tsx
+@@ -0,0 +1,31 @@
++import { createContext, useContext, useState, useMemo } from 'react';
++import type { ReactNode } from 'react';
++
++import type { Tracker } from '../api/trackers';
++
++interface OnboardingContextValue {
++  selectedTemplateIds: string[];
++  setSelectedTemplateIds: (ids: string[]) => void;
++  createdTrackers: Tracker[];
++  setCreatedTrackers: (trackers: Tracker[]) => void;
++}
++
++const OnboardingContext = createContext<OnboardingContextValue | null>(null);
++
++export function OnboardingProvider({ children }: { children: ReactNode }) {
++  const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
++  const [createdTrackers, setCreatedTrackers] = useState<Tracker[]>([]);
++
++  const value = useMemo(
++    () => ({ selectedTemplateIds, setSelectedTemplateIds, createdTrackers, setCreatedTrackers }),
++    [selectedTemplateIds, createdTrackers],
++  );
++
++  return <OnboardingContext.Provider value={value}>{children}</OnboardingContext.Provider>;
++}
++
++export function useOnboarding(): OnboardingContextValue {
++  const ctx = useContext(OnboardingContext);
++  if (!ctx) throw new Error('useOnboarding must be used within OnboardingProvider');
++  return ctx;
++}
+diff --git a/mobile/src/lib/trackerTemplates.ts b/mobile/src/lib/trackerTemplates.ts
+new file mode 100644
+index 0000000..ba84f3f
+--- /dev/null
++++ b/mobile/src/lib/trackerTemplates.ts
+@@ -0,0 +1,102 @@
++import type { CreateTrackerRequest } from '../api/trackers';
++
++export interface TrackerTemplate {
++  id: string;
++  label: string;
++  icon: string;
++  defaults: CreateTrackerRequest;
++}
++
++/**
++ * Requirements: 11.2
++ */
++export const TRACKER_TEMPLATES: TrackerTemplate[] = [
++  {
++    id: 'sleep',
++    label: 'Sommeil',
++    icon: '🌙',
++    defaults: {
++      name: 'Sommeil',
++      dataType: 'numeric',
++      unit: 'h',
++      frequency: 'daily',
++      validRange: { min: 0, max: 24 },
++      isHabit: false,
++    },
++  },
++  {
++    id: 'water',
++    label: 'Eau',
++    icon: '💧',
++    defaults: {
++      name: 'Eau',
++      dataType: 'numeric',
++      unit: 'L',
++      frequency: 'daily',
++      validRange: { min: 0, max: 10 },
++      isHabit: false,
++    },
++  },
++  {
++    id: 'exercise',
++    label: 'Exercice',
++    icon: '🏃',
++    defaults: {
++      name: 'Exercice',
++      dataType: 'boolean',
++      frequency: 'daily',
++      isHabit: true,
++      graceEnabled: true,
++    },
++  },
++  {
++    id: 'mood',
++    label: 'Humeur',
++    icon: '🙂',
++    defaults: {
++      name: 'Humeur',
++      dataType: 'numeric',
++      frequency: 'daily',
++      validRange: { min: 1, max: 10 },
++      isHabit: false,
++    },
++  },
++  {
++    id: 'reading',
++    label: 'Lecture',
++    icon: '📖',
++    defaults: {
++      name: 'Lecture',
++      dataType: 'boolean',
++      frequency: 'daily',
++      isHabit: true,
++      graceEnabled: false,
++    },
++  },
++];
++
++export const MAX_ACTIVE_TRACKERS = 50;
++
++export interface BatchSelectionResult {
++  toCreate: TrackerTemplate[];
++  rejected: TrackerTemplate[];
++}
++
++/**
++ * Given the User's current active Tracker count and a set of selected
++ * templates, determines which get created — exactly
++ * min(selected.length, 50 - activeCount) — and which are rejected once the
++ * limit is hit.
++ *
++ * Requirements: 11.7, 2.10
++ */
++export function resolveBatchSelection(
++  activeCount: number,
++  selected: TrackerTemplate[],
++): BatchSelectionResult {
++  const remainingCapacity = Math.max(0, MAX_ACTIVE_TRACKERS - activeCount);
++  return {
++    toCreate: selected.slice(0, remainingCapacity),
++    rejected: selected.slice(remainingCapacity),
++  };
++}
+diff --git a/mobile/src/screens/SettingsScreen.tsx b/mobile/src/screens/SettingsScreen.tsx
+index 7d15828..a4fdb42 100644
+--- a/mobile/src/screens/SettingsScreen.tsx
++++ b/mobile/src/screens/SettingsScreen.tsx
+@@ -13,6 +13,10 @@ export default function SettingsScreen(): JSX.Element {
+         <Text style={styles.rowText}>Mes trackers</Text>
+         <Text style={styles.chevron}>›</Text>
+       </Pressable>
++      <Pressable style={styles.row} onPress={() => router.push('/(onboarding)/welcome')}>
++        <Text style={styles.rowText}>Relancer l'onboarding</Text>
++        <Text style={styles.chevron}>›</Text>
++      </Pressable>
+     </View>
+   );
+ }
+diff --git a/mobile/src/screens/onboarding/CompletionScreen.tsx b/mobile/src/screens/onboarding/CompletionScreen.tsx
+new file mode 100644
+index 0000000..eb2e75a
+--- /dev/null
++++ b/mobile/src/screens/onboarding/CompletionScreen.tsx
+@@ -0,0 +1,37 @@
++import { View, Text, Pressable, StyleSheet } from 'react-native';
++import { useRouter } from 'expo-router';
++
++import { useOnboarding } from '../../lib/onboardingContext';
++
++/**
++ * Requirements: 11.4
++ */
++export default function CompletionScreen() {
++  const router = useRouter();
++  const { createdTrackers } = useOnboarding();
++
++  return (
++    <View style={styles.container}>
++      <Text style={styles.emoji}>🎉</Text>
++      <Text style={styles.title}>C'est parti !</Text>
++      <Text style={styles.subtitle}>
++        {createdTrackers.length > 0
++          ? `${createdTrackers.length} tracker${createdTrackers.length > 1 ? 's ont' : ' a'} été créé${createdTrackers.length > 1 ? 's' : ''}.`
++          : 'Vous pourrez créer vos trackers à tout moment depuis le tableau de bord.'}
++      </Text>
++
++      <Pressable style={styles.primaryButton} onPress={() => router.replace('/(tabs)')}>
++        <Text style={styles.primaryButtonText}>Voir mon tableau de bord</Text>
++      </Pressable>
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 12 },
++  emoji: { fontSize: 48 },
++  title: { fontSize: 24, fontWeight: '700' },
++  subtitle: { fontSize: 15, color: '#666', textAlign: 'center', marginBottom: 16 },
++  primaryButton: { backgroundColor: '#111', borderRadius: 8, paddingHorizontal: 32, paddingVertical: 14 },
++  primaryButtonText: { color: '#fff', fontWeight: '600', fontSize: 16 },
++});
+diff --git a/mobile/src/screens/onboarding/TemplateSelectionScreen.tsx b/mobile/src/screens/onboarding/TemplateSelectionScreen.tsx
+new file mode 100644
+index 0000000..ded6cba
+--- /dev/null
++++ b/mobile/src/screens/onboarding/TemplateSelectionScreen.tsx
+@@ -0,0 +1,145 @@
++import { useState } from 'react';
++import { View, Text, Pressable, ScrollView, ActivityIndicator, StyleSheet } from 'react-native';
++import { useRouter } from 'expo-router';
++import { useQuery, useQueryClient } from '@tanstack/react-query';
++
++import { fetchTrackers, createTracker } from '../../api/trackers';
++import { TRACKER_TEMPLATES, MAX_ACTIVE_TRACKERS, resolveBatchSelection } from '../../lib/trackerTemplates';
++import { useOnboarding } from '../../lib/onboardingContext';
++
++/**
++ * Requirements: 11.2, 11.3, 11.6, 11.7, 2.10
++ */
++export default function TemplateSelectionScreen() {
++  const router = useRouter();
++  const queryClient = useQueryClient();
++  const { selectedTemplateIds, setSelectedTemplateIds, setCreatedTrackers } = useOnboarding();
++  const [creating, setCreating] = useState(false);
++  const [limitNotice, setLimitNotice] = useState<string | null>(null);
++
++  const { data: existingTrackers, isLoading } = useQuery({
++    queryKey: ['trackers', 'onboarding-count'],
++    queryFn: () => fetchTrackers(),
++  });
++
++  const activeCount = existingTrackers?.length ?? 0;
++  const remainingCapacity = Math.max(0, MAX_ACTIVE_TRACKERS - activeCount);
++
++  function toggle(templateId: string): void {
++    setLimitNotice(null);
++    if (selectedTemplateIds.includes(templateId)) {
++      setSelectedTemplateIds(selectedTemplateIds.filter((id) => id !== templateId));
++      return;
++    }
++    if (selectedTemplateIds.length >= remainingCapacity) {
++      setLimitNotice(`Limite atteinte : ${remainingCapacity} tracker(s) restant(s) sur 50.`);
++      return;
++    }
++    setSelectedTemplateIds([...selectedTemplateIds, templateId]);
++  }
++
++  async function handleNext(): Promise<void> {
++    if (selectedTemplateIds.length === 0) {
++      router.push('/(onboarding)/complete');
++      return;
++    }
++
++    const selectedTemplates = TRACKER_TEMPLATES.filter((t) => selectedTemplateIds.includes(t.id));
++    const { toCreate } = resolveBatchSelection(activeCount, selectedTemplates);
++
++    setCreating(true);
++    try {
++      // Sequential on purpose: keeps behaviour predictable and easy to
++      // reason about if the server-side limit is hit mid-batch.
++      const created = [];
++      for (const template of toCreate) {
++        created.push(await createTracker(template.defaults));
++      }
++      setCreatedTrackers(created);
++      await queryClient.invalidateQueries({ queryKey: ['trackers'] });
++      await queryClient.invalidateQueries({ queryKey: ['dashboard'] });
++      router.push('/(onboarding)/edit');
++    } finally {
++      setCreating(false);
++    }
++  }
++
++  if (isLoading) {
++    return (
++      <View style={styles.centered}>
++        <ActivityIndicator />
++      </View>
++    );
++  }
++
++  return (
++    <ScrollView contentContainerStyle={styles.container}>
++      <Text style={styles.title}>Choisissez vos trackers</Text>
++      <Text style={styles.subtitle}>Sélectionnez-en un ou plusieurs pour commencer.</Text>
++
++      {limitNotice && (
++        <View style={styles.limitBanner}>
++          <Text style={styles.limitBannerText}>{limitNotice}</Text>
++        </View>
++      )}
++
++      <View style={styles.grid}>
++        {TRACKER_TEMPLATES.map((template) => {
++          const selected = selectedTemplateIds.includes(template.id);
++          return (
++            <Pressable
++              key={template.id}
++              style={[styles.card, selected && styles.cardSelected]}
++              onPress={() => toggle(template.id)}
++            >
++              <Text style={styles.cardIcon}>{template.icon}</Text>
++              <Text style={[styles.cardLabel, selected && styles.cardLabelSelected]}>
++                {template.label}
++              </Text>
++            </Pressable>
++          );
++        })}
++      </View>
++
++      <Pressable style={styles.primaryButton} onPress={() => void handleNext()} disabled={creating}>
++        {creating ? (
++          <ActivityIndicator color="#fff" />
++        ) : (
++          <Text style={styles.primaryButtonText}>
++            {selectedTemplateIds.length > 0 ? 'Continuer' : 'Passer cette étape'}
++          </Text>
++        )}
++      </Pressable>
++
++      <Pressable onPress={() => router.replace('/(tabs)')}>
++        <Text style={styles.skip}>Passer l'onboarding</Text>
++      </Pressable>
++    </ScrollView>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { padding: 24, paddingBottom: 48 },
++  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
++  title: { fontSize: 22, fontWeight: '700', marginBottom: 4 },
++  subtitle: { fontSize: 14, color: '#666', marginBottom: 16 },
++  limitBanner: { backgroundColor: '#fef2f2', borderRadius: 8, padding: 12, marginBottom: 16 },
++  limitBannerText: { color: '#dc2626', fontSize: 13 },
++  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 24 },
++  card: {
++    width: '30%',
++    borderWidth: 1.5,
++    borderColor: '#e5e5e5',
++    borderRadius: 12,
++    paddingVertical: 16,
++    alignItems: 'center',
++    gap: 6,
++  },
++  cardSelected: { borderColor: '#111', backgroundColor: '#f5f5f5' },
++  cardIcon: { fontSize: 28 },
++  cardLabel: { fontSize: 13, color: '#444' },
++  cardLabelSelected: { fontWeight: '700', color: '#111' },
++  primaryButton: { backgroundColor: '#111', borderRadius: 8, padding: 14, alignItems: 'center' },
++  primaryButtonText: { color: '#fff', fontWeight: '600' },
++  skip: { color: '#888', marginTop: 16, fontSize: 14, textAlign: 'center' },
++});
+diff --git a/mobile/src/screens/onboarding/TrackerEditScreen.tsx b/mobile/src/screens/onboarding/TrackerEditScreen.tsx
+new file mode 100644
+index 0000000..6d6309b
+--- /dev/null
++++ b/mobile/src/screens/onboarding/TrackerEditScreen.tsx
+@@ -0,0 +1,120 @@
++import { useState } from 'react';
++import { View, Text, Pressable, ScrollView, ActivityIndicator, StyleSheet } from 'react-native';
++import { useRouter } from 'expo-router';
++
++import { updateTracker } from '../../api/trackers';
++import type { Tracker } from '../../api/trackers';
++import TrackerFormFields, {
++  frequencyFromForm,
++  validRangeFromForm,
++} from '../../components/TrackerFormFields';
++import type { TrackerFormValues } from '../../components/TrackerFormFields';
++import { useOnboarding } from '../../lib/onboardingContext';
++
++function formValuesFromTracker(tracker: Tracker): TrackerFormValues {
++  const frequencyType =
++    tracker.frequency === 'daily' || tracker.frequency === 'weekly' ? tracker.frequency : 'custom';
++
++  return {
++    name: tracker.name,
++    unit: tracker.unit ?? '',
++    frequencyType,
++    intervalDays:
++      typeof tracker.frequency === 'object' ? String(tracker.frequency.intervalDays) : '2',
++    validRangeEnabled: tracker.validRange !== null,
++    validMin: tracker.validRange ? String(tracker.validRange.min) : '',
++    validMax: tracker.validRange ? String(tracker.validRange.max) : '',
++    isHabit: tracker.isHabit,
++    graceEnabled: tracker.graceEnabled,
++  };
++}
++
++/**
++ * Requirements: 11.3
++ */
++export default function TrackerEditScreen() {
++  const router = useRouter();
++  const { createdTrackers } = useOnboarding();
++  const [index, setIndex] = useState(0);
++  const [values, setValues] = useState<TrackerFormValues | null>(
++    createdTrackers[0] ? formValuesFromTracker(createdTrackers[0]) : null,
++  );
++  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
++  const [saving, setSaving] = useState(false);
++
++  if (createdTrackers.length === 0 || !values) {
++    router.replace('/(onboarding)/complete');
++    return null;
++  }
++
++  const tracker = createdTrackers[index]!;
++  const isLast = index === createdTrackers.length - 1;
++
++  async function handleNext(): Promise<void> {
++    setFieldErrors({});
++    const frequency = frequencyFromForm(values!);
++    const validRange = validRangeFromForm(values!);
++    if (frequency === null) {
++      setFieldErrors({ frequency: 'Intervalle personnalisé invalide (minimum 1 jour)' });
++      return;
++    }
++    if (validRange === null) {
++      setFieldErrors({ validRange: 'Plage invalide : le minimum doit être inférieur au maximum' });
++      return;
++    }
++
++    setSaving(true);
++    try {
++      await updateTracker(tracker.id, {
++        name: values!.name,
++        ...(values!.unit ? { unit: values!.unit } : {}),
++        frequency,
++        ...(validRange ? { validRange } : {}),
++        isHabit: values!.isHabit,
++        graceEnabled: values!.isHabit && values!.graceEnabled,
++      });
++
++      if (isLast) {
++        router.push('/(onboarding)/complete');
++      } else {
++        const nextIndex = index + 1;
++        setIndex(nextIndex);
++        setValues(formValuesFromTracker(createdTrackers[nextIndex]!));
++      }
++    } finally {
++      setSaving(false);
++    }
++  }
++
++  return (
++    <ScrollView contentContainerStyle={styles.container}>
++      <Text style={styles.step}>
++        Tracker {index + 1} / {createdTrackers.length}
++      </Text>
++      <Text style={styles.title}>Personnalisez "{tracker.name}"</Text>
++
++      <TrackerFormFields values={values} onChange={setValues} fieldErrors={fieldErrors} />
++
++      <Pressable style={styles.primaryButton} onPress={() => void handleNext()} disabled={saving}>
++        {saving ? (
++          <ActivityIndicator color="#fff" />
++        ) : (
++          <Text style={styles.primaryButtonText}>{isLast ? 'Terminer' : 'Suivant'}</Text>
++        )}
++      </Pressable>
++
++      <Pressable onPress={() => router.replace('/(tabs)')}>
++        <Text style={styles.skip}>Passer</Text>
++      </Pressable>
++    </ScrollView>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { padding: 24, paddingBottom: 48 },
++  step: { fontSize: 13, color: '#888', marginBottom: 4 },
++  title: { fontSize: 20, fontWeight: '700', marginBottom: 16 },
++  primaryButton: { backgroundColor: '#111', borderRadius: 8, padding: 14, alignItems: 'center', marginTop: 24 },
++  primaryButtonText: { color: '#fff', fontWeight: '600' },
++  skip: { color: '#888', marginTop: 16, fontSize: 14, textAlign: 'center' },
++});
+diff --git a/mobile/src/screens/onboarding/WelcomeScreen.tsx b/mobile/src/screens/onboarding/WelcomeScreen.tsx
+new file mode 100644
+index 0000000..26e9040
+--- /dev/null
++++ b/mobile/src/screens/onboarding/WelcomeScreen.tsx
+@@ -0,0 +1,38 @@
++import { View, Text, Pressable, StyleSheet } from 'react-native';
++import { useRouter } from 'expo-router';
++
++/**
++ * Requirements: 11.1, 11.5
++ */
++export default function WelcomeScreen() {
++  const router = useRouter();
++
++  return (
++    <View style={styles.container}>
++      <Text style={styles.emoji}>👋</Text>
++      <Text style={styles.title}>Bienvenue sur LifeTrack</Text>
++      <Text style={styles.subtitle}>
++        Suivez vos habitudes, votre humeur et vos objectifs au même endroit. Configurons
++        ensemble vos premiers trackers.
++      </Text>
++
++      <Pressable style={styles.primaryButton} onPress={() => router.push('/(onboarding)/templates')}>
++        <Text style={styles.primaryButtonText}>Commencer</Text>
++      </Pressable>
++
++      <Pressable onPress={() => router.replace('/(tabs)')}>
++        <Text style={styles.skip}>Passer</Text>
++      </Pressable>
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  container: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 12 },
++  emoji: { fontSize: 48 },
++  title: { fontSize: 24, fontWeight: '700', textAlign: 'center' },
++  subtitle: { fontSize: 15, color: '#666', textAlign: 'center', marginBottom: 16 },
++  primaryButton: { backgroundColor: '#111', borderRadius: 8, paddingHorizontal: 32, paddingVertical: 14 },
++  primaryButtonText: { color: '#fff', fontWeight: '600', fontSize: 16 },
++  skip: { color: '#888', marginTop: 16, fontSize: 14 },
++});

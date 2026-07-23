@@ -11,6 +11,7 @@ export default function RootLayout(): JSX.Element {
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="index" />
         <Stack.Screen name="(auth)" />
+        <Stack.Screen name="(onboarding)" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="trackers" options={{ headerShown: true }} />
         <Stack.Screen name="goals" options={{ headerShown: true }} />
