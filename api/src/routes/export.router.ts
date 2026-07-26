@@ -6,6 +6,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import { asyncHandler } from '../middleware/asyncHandler';
+
 import { requireAuth } from '../middleware/auth.middleware';
 import { generateExport, getExportJobStatus } from '../services/export.service';
 
@@ -14,7 +16,7 @@ const router = Router();
 router.use(requireAuth);
 
 // POST /exports
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
 
   try {
@@ -37,10 +39,10 @@ router.post('/', async (req: Request, res: Response) => {
       message: `Export could not be completed: ${err instanceof Error ? err.message : 'unknown error'}`,
     });
   }
-});
+}));
 
 // GET /exports/:jobId
-router.get('/:jobId', async (req: Request, res: Response) => {
+router.get('/:jobId', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const status = await getExportJobStatus(userId, req.params['jobId']!);
 
@@ -50,6 +52,6 @@ router.get('/:jobId', async (req: Request, res: Response) => {
   }
 
   res.status(200).json(status);
-});
+}));
 
 export default router;

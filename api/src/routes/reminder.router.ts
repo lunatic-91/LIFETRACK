@@ -6,6 +6,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import { asyncHandler } from '../middleware/asyncHandler';
+
 import { requireAuth } from '../middleware/auth.middleware';
 import {
   createReminder,
@@ -21,15 +23,15 @@ router.use(requireAuth);
 
 // PATCH /reminders/global — registered before /:id so 'global' is never
 // swallowed as a Reminder id.
-router.patch('/global', async (req: Request, res: Response) => {
+router.patch('/global', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const enabled = Boolean((req.body as { enabled?: unknown }).enabled);
   const result = await setGlobalEnabled(userId, enabled);
   res.status(200).json(result);
-});
+}));
 
 // POST /reminders
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const result = await createReminder(userId, req.body);
 
@@ -39,17 +41,17 @@ router.post('/', async (req: Request, res: Response) => {
   }
 
   res.status(201).json(result);
-});
+}));
 
 // GET /reminders
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const reminders = await listReminders(userId);
   res.status(200).json(reminders);
-});
+}));
 
 // PATCH /reminders/:id
-router.patch('/:id', async (req: Request, res: Response) => {
+router.patch('/:id', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const result = await updateReminder(userId, req.params['id']!, req.body);
 
@@ -60,10 +62,10 @@ router.patch('/:id', async (req: Request, res: Response) => {
   }
 
   res.status(200).json(result);
-});
+}));
 
 // DELETE /reminders/:id
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const result = await deleteReminder(userId, req.params['id']!);
 
@@ -73,6 +75,6 @@ router.delete('/:id', async (req: Request, res: Response) => {
   }
 
   res.status(204).send();
-});
+}));
 
 export default router;

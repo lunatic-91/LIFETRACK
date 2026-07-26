@@ -6,6 +6,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import { asyncHandler } from '../middleware/asyncHandler';
+
 import { requireAuth } from '../middleware/auth.middleware';
 import { createGoal, listGoals, updateGoal } from '../services/goal.service';
 
@@ -14,7 +16,7 @@ const router = Router();
 router.use(requireAuth);
 
 // POST /goals
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const result = await createGoal(userId, req.body);
 
@@ -25,17 +27,17 @@ router.post('/', async (req: Request, res: Response) => {
   }
 
   res.status(201).json(result);
-});
+}));
 
 // GET /goals
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const goals = await listGoals(userId);
   res.status(200).json(goals);
-});
+}));
 
 // PATCH /goals/:id
-router.patch('/:id', async (req: Request, res: Response) => {
+router.patch('/:id', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const result = await updateGoal(userId, req.params['id']!, req.body);
 
@@ -46,6 +48,6 @@ router.patch('/:id', async (req: Request, res: Response) => {
   }
 
   res.status(200).json(result);
-});
+}));
 
 export default router;

@@ -6,6 +6,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import { asyncHandler } from '../middleware/asyncHandler';
+
 import { requireAuth } from '../middleware/auth.middleware';
 import {
   createTracker,
@@ -23,14 +25,14 @@ router.use(requireAuth);
 router.use('/:id/entries', entryRouter);
 
 // GET /trackers/:id/streak
-router.get('/:id/streak', async (req: Request, res: Response) => {
+router.get('/:id/streak', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const streak = await getStreak(userId, req.params['id']!);
   res.status(200).json(streak);
-});
+}));
 
 // POST /trackers
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const result = await createTracker(userId, req.body);
 
@@ -41,18 +43,18 @@ router.post('/', async (req: Request, res: Response) => {
   }
 
   res.status(201).json(result);
-});
+}));
 
 // GET /trackers
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const includeArchived = req.query['includeArchived'] === 'true';
   const trackers = await listTrackers(userId, { includeArchived });
   res.status(200).json(trackers);
-});
+}));
 
 // PATCH /trackers/:id
-router.patch('/:id', async (req: Request, res: Response) => {
+router.patch('/:id', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const result = await updateTracker(userId, req.params['id']!, req.body);
 
@@ -63,10 +65,10 @@ router.patch('/:id', async (req: Request, res: Response) => {
   }
 
   res.status(200).json(result);
-});
+}));
 
 // POST /trackers/:id/archive
-router.post('/:id/archive', async (req: Request, res: Response) => {
+router.post('/:id/archive', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const result = await archiveTracker(userId, req.params['id']!);
 
@@ -76,10 +78,10 @@ router.post('/:id/archive', async (req: Request, res: Response) => {
   }
 
   res.status(204).send();
-});
+}));
 
 // DELETE /trackers/:id
-router.delete('/:id', async (req: Request, res: Response) => {
+router.delete('/:id', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const result = await deleteTracker(userId, req.params['id']!);
 
@@ -90,6 +92,6 @@ router.delete('/:id', async (req: Request, res: Response) => {
   }
 
   res.status(204).send();
-});
+}));
 
 export default router;

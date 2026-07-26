@@ -6,6 +6,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import { asyncHandler } from '../middleware/asyncHandler';
+
 import { requireAuth } from '../middleware/auth.middleware';
 import { logEntry, listEntries, editEntry } from '../services/entry.service';
 
@@ -14,7 +16,7 @@ const router = Router({ mergeParams: true });
 router.use(requireAuth);
 
 // POST /trackers/:id/entries
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const trackerId = req.params['id']!;
 
@@ -31,10 +33,10 @@ router.post('/', async (req: Request, res: Response) => {
     res.set('X-Note-Truncated', 'true');
   }
   res.status(201).json(result.entry);
-});
+}));
 
 // GET /trackers/:id/entries
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const trackerId = req.params['id']!;
   const { start, end, limit, offset } = req.query as Record<string, string | undefined>;
@@ -47,10 +49,10 @@ router.get('/', async (req: Request, res: Response) => {
   });
 
   res.status(200).json(entries);
-});
+}));
 
 // PATCH /trackers/:id/entries/:eid
-router.patch('/:eid', async (req: Request, res: Response) => {
+router.patch('/:eid', asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.sub;
   const trackerId = req.params['id']!;
   const entryId = req.params['eid']!;
@@ -67,6 +69,6 @@ router.patch('/:eid', async (req: Request, res: Response) => {
     res.set('X-Note-Truncated', 'true');
   }
   res.status(200).json(result.entry);
-});
+}));
 
 export default router;

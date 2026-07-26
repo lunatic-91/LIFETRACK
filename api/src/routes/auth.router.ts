@@ -6,6 +6,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import { asyncHandler } from '../middleware/asyncHandler';
+
 import {
   registerUser,
   loginUser,
@@ -18,7 +20,7 @@ import {
 const router = Router();
 
 // POST /auth/register
-router.post('/register', async (req: Request, res: Response) => {
+router.post('/register', asyncHandler(async (req: Request, res: Response) => {
   const { email, password } = req.body as { email?: string; password?: string };
 
   if (!email || !password) {
@@ -42,10 +44,10 @@ router.post('/register', async (req: Request, res: Response) => {
   }
 
   res.status(201).json(result);
-});
+}));
 
 // POST /auth/login
-router.post('/login', async (req: Request, res: Response) => {
+router.post('/login', asyncHandler(async (req: Request, res: Response) => {
   const { email, password } = req.body as { email?: string; password?: string };
 
   if (!email || !password) {
@@ -68,10 +70,10 @@ router.post('/login', async (req: Request, res: Response) => {
   }
 
   res.status(200).json(result);
-});
+}));
 
 // POST /auth/refresh
-router.post('/refresh', async (req: Request, res: Response) => {
+router.post('/refresh', asyncHandler(async (req: Request, res: Response) => {
   const { refreshToken } = req.body as { refreshToken?: string };
 
   if (!refreshToken) {
@@ -91,10 +93,10 @@ router.post('/refresh', async (req: Request, res: Response) => {
   }
 
   res.status(200).json(result);
-});
+}));
 
 // POST /auth/logout
-router.post('/logout', async (req: Request, res: Response) => {
+router.post('/logout', asyncHandler(async (req: Request, res: Response) => {
   const { refreshToken } = req.body as { refreshToken?: string };
 
   if (refreshToken) {
@@ -102,10 +104,10 @@ router.post('/logout', async (req: Request, res: Response) => {
   }
 
   res.status(204).send();
-});
+}));
 
 // POST /auth/password-reset
-router.post('/password-reset', async (req: Request, res: Response) => {
+router.post('/password-reset', asyncHandler(async (req: Request, res: Response) => {
   const { email } = req.body as { email?: string };
 
   if (!email) {
@@ -125,10 +127,10 @@ router.post('/password-reset', async (req: Request, res: Response) => {
   }
 
   res.status(202).send();
-});
+}));
 
 // POST /auth/password-reset/confirm
-router.post('/password-reset/confirm', async (req: Request, res: Response) => {
+router.post('/password-reset/confirm', asyncHandler(async (req: Request, res: Response) => {
   const { token, newPassword } = req.body as { token?: string; newPassword?: string };
 
   if (!token || !newPassword) {
@@ -152,6 +154,6 @@ router.post('/password-reset/confirm', async (req: Request, res: Response) => {
   }
 
   res.status(204).send();
-});
+}));
 
 export default router;
