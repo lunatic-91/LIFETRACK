@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    name: Unit & property tests (api + mobile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Type-check API
+        run: npm run build --workspace=api --if-present
+
+      - name: API unit & property tests
+        run: npm run test --workspace=api --if-present
+
+      - name: Mobile unit & property tests
+        run: npm run test --workspace=mobile --if-present
+
+  integration-tests:
+    name: Integration tests (real Postgres + Redis)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: lifetrack
+          POSTGRES_PASSWORD: lifetrack_ci
+          POSTGRES_DB: lifetrack_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      JWT_SECRET: ci-only-secret-not-for-prod
+      TEST_DB_URL: postgres://lifetrack:lifetrack_ci@localhost:5432/lifetrack_test
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Enable pgcrypto (gen_random_uuid)
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          PGPASSWORD=lifetrack_ci psql -h localhost -U lifetrack -d lifetrack_test -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+
+      - name: Run migrations
+        working-directory: api
+        run: npm run migrate
+
+      - name: Run integration tests
+        working-directory: api
+        run: npm run test:integration

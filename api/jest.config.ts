@@ -10,6 +10,9 @@ const config: Config = {
     '**/*.test.ts',
     '**/*.spec.ts',
   ],
+  // Integration tests need a real Postgres + Redis (TEST_DB_URL /
+  // TEST_REDIS_URL) and run separately via `npm run test:integration`.
+  testPathIgnorePatterns: ['/node_modules/', '/__tests__/integration/'],
   // jest.setup.ts runs fc.configureGlobal({ numRuns: 100 }) before each test suite
   setupFiles: ['../jest.setup.ts'],
   transform: {

@@ -1,8 +1,17 @@
 import Knex from 'knex';
 import type { Knex as KnexType } from 'knex';
 import IORedis from 'ioredis';
+import pg from 'pg';
 
 import knexConfig from './knexfile';
+
+// node-pg parses SQL DATE columns (oid 1082) into JS Date objects by
+// default. Every service in this codebase treats `local_date` as a plain
+// 'YYYY-MM-DD' string (Set membership checks in streak calculation,
+// `.slice(0, 10)` in exports, etc) — a JS Date silently breaks every one of
+// those comparisons. Registering the raw string parser here fixes it once,
+// for every query, instead of patching each call site.
+pg.types.setTypeParser(1082 /* DATE */, (value: string) => value);
 
 let knexInstance: KnexType | null = null;
 let redisInstance: IORedis | null = null;
