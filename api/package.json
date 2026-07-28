@@ -10,7 +10,7 @@
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "test:integration": "jest --config jest.integration.config.ts --runInBand",
+    "test:integration": "jest --config jest.integration.config.ts --runInBand --forceExit",
     "lint": "eslint src --ext .ts",
     "migrate": "knex migrate:latest --knexfile src/db/knexfile.ts",
     "migrate:rollback": "knex migrate:rollback --knexfile src/db/knexfile.ts",
