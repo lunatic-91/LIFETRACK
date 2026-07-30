@@ -7,6 +7,7 @@
     "build": "tsc --project tsconfig.json",
     "start": "node dist/index.js",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "migrate:prod": "NODE_ENV=production knex migrate:latest --knexfile src/db/knexfile.ts --env production",
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
