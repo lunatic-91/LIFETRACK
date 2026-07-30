@@ -1,0 +1,52 @@
+/**
+ * Combined worker process for the 1 OCPU / 1GB Oracle Free Tier VM.
+ *
+ * Running insight/export/notif/streak workers as 4 separate Node processes
+ * would waste ~30-50MB of baseline V8/Node runtime overhead per process —
+ * on a 1GB machine, that adds up fast alongside the API and Nginx. Since
+ * BullMQ Workers are just event-driven listeners (not CPU-bound loops),
+ * running all 4 inside one process costs one runtime instead of four,
+ * with no loss of functionality.
+ *
+ * Run with: node dist/workers/all.worker.js
+ */
+
+import { startInsightWorker } from './insight.worker';
+import { startExportWorker } from './export.worker';
+import { startNotifWorker } from './notif.worker';
+import { startStreakWorker } from './streak.worker';
+
+const insightWorker = startInsightWorker();
+const exportWorker = startExportWorker();
+const notifWorker = startNotifWorker();
+const streakWorker = startStreakWorker();
+
+// eslint-disable-next-line no-console
+console.log('[LifeTrack workers] insight, export, notif, and streak workers started');
+
+for (const [name, worker] of [
+  ['insight', insightWorker],
+  ['export', exportWorker],
+  ['notif', notifWorker],
+  ['streak', streakWorker],
+] as const) {
+  worker.on('failed', (job, err) => {
+    // eslint-disable-next-line no-console
+    console.error(`[${name}] job ${job?.id} failed:`, err);
+  });
+}
+
+async function shutdown(): Promise<void> {
+  // eslint-disable-next-line no-console
+  console.log('[LifeTrack workers] shutting down...');
+  await Promise.all([
+    insightWorker.close(),
+    exportWorker.close(),
+    notifWorker.close(),
+    streakWorker.close(),
+  ]);
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => void shutdown());
+process.on('SIGINT', () => void shutdown());
