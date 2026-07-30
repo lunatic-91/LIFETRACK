@@ -21,6 +21,7 @@
     "@typescript-eslint/parser": "8.63.0",
     "bcrypt": "^6.0.0",
     "bullmq": "^5.80.2",
+    "cors": "^2.8.6",
     "expo": "57.0.4",
     "express": "^4.22.2",
     "ioredis": "5.3.2",
@@ -31,6 +32,7 @@
   },
   "devDependencies": {
     "@types/bcrypt": "5.0.2",
+    "@types/cors": "^2.8.19",
     "@types/express": "4.17.21",
     "@types/jest": "29.5.12",
     "@types/jsonwebtoken": "9.0.6",

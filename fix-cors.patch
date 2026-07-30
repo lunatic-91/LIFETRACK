@@ -1,0 +1,62 @@
+diff --git a/api/package.json b/api/package.json
+index f2f3668..5f6f0f5 100644
+--- a/api/package.json
++++ b/api/package.json
+@@ -21,6 +21,7 @@
+     "@typescript-eslint/parser": "8.63.0",
+     "bcrypt": "^6.0.0",
+     "bullmq": "^5.80.2",
++    "cors": "^2.8.6",
+     "expo": "57.0.4",
+     "express": "^4.22.2",
+     "ioredis": "5.3.2",
+@@ -31,6 +32,7 @@
+   },
+   "devDependencies": {
+     "@types/bcrypt": "5.0.2",
++    "@types/cors": "^2.8.19",
+     "@types/express": "4.17.21",
+     "@types/jest": "29.5.12",
+     "@types/jsonwebtoken": "9.0.6",
+diff --git a/api/src/index.ts b/api/src/index.ts
+index 1295537..42303b9 100644
+--- a/api/src/index.ts
++++ b/api/src/index.ts
+@@ -1,4 +1,5 @@
+ import express from 'express';
++import cors from 'cors';
+ 
+ import authRouter from './routes/auth.router';
+ import trackerRouter from './routes/tracker.router';
+@@ -10,6 +11,31 @@ import { notFoundHandler, globalErrorHandler } from './middleware/errorHandler';
+ 
+ const app = express();
+ 
++// Native mobile requests (iOS/Android) don't send an Origin header, so CORS
++// only matters for web/browser clients (e.g. Expo web during development).
++// Configure allowed origins via CORS_ORIGIN (comma-separated). Falls back to
++// common local Expo web dev ports if unset.
++const allowedOrigins = (
++  process.env['CORS_ORIGIN'] ?? 'http://localhost:8081,http://localhost:19006'
++)
++  .split(',')
++  .map((origin) => origin.trim())
++  .filter(Boolean);
++
++app.use(
++  cors({
++    origin(origin, callback) {
++      // Allow requests with no origin (native apps, curl, server-to-server).
++      if (!origin || allowedOrigins.includes(origin)) {
++        callback(null, true);
++        return;
++      }
++      callback(new Error(`Not allowed by CORS: ${origin}`));
++    },
++    credentials: true,
++  })
++);
++
+ app.use(express.json());
+ 
+ app.get('/health', (_req, res) => {
